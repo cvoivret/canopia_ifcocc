@@ -9,11 +9,11 @@ from OCC.Display.SimpleGui import init_display
 from OCC.Extend.TopologyUtils import TopologyExplorer, WireExplorer
 from OCC.Core.BRep import BRep_Tool
 import OCC.Core.BOPTools as bpt
-from OCC.Core.gp import gp_Pnt,gp_Dir,gp_Vec
+from OCC.Core.gp import gp_Pnt,gp_Dir,gp_Vec,gp_Pln
 from OCC.Core.Geom import Geom_Plane
 import OCC.Core.BRepPrimAPI as brpapi
 
-from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox,BRepPrimAPI_MakePrism
+from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox,BRepPrimAPI_MakePrism,BRepPrimAPI_MakeHalfSpace
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.BRepExtrema import BRepExtrema_ShapeProximity
 from OCC.Core.BRepGProp import brepgprop_SurfaceProperties
@@ -21,17 +21,19 @@ from OCC.Core.GProp import GProp_GProps
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 
 from OCC.Core.TopoDS import TopoDS_Face
-
+ 
 from OCC.Core.BOPAlgo import BOPAlgo_MakerVolume,BOPAlgo_BOP,BOPAlgo_Operation,BOPAlgo_GlueEnum
 from OCC.Core.BOPTools import BOPTools_AlgoTools_OrientFacesOnShell
 from OCC.Core.TopTools import TopTools_ListOfShape,TopTools_IndexedMapOfShape,TopTools_MapOfShape
 
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Sewing,BRepBuilderAPI_MakeSolid
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Sewing,BRepBuilderAPI_MakeSolid,BRepBuilderAPI_MakeFace
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCC.Core.TopExp import topexp_MapShapes
 
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
+
+import OCC.Extend.TopologyUtils as utils
 
 
 #from OCC.Core.TopoDS import Solid
@@ -56,6 +58,10 @@ setting.set(setting.USE_PYTHON_OPENCASCADE, True)
 ifc_file= ifcopenshell.open('data/office_ifcwiki.ifc')
 #ifc_file= ifcopenshell.open('data/villa.ifc')
 
+#ifc_file= ifcopenshell.open('data/DCE_CDV_BAT.ifc')
+
+
+
 #opening_list=ifc_file.by_type('IfcOpeningElement')
 #opening=opening_list[0]
 
@@ -66,9 +72,50 @@ spaces=ifc_file.by_type('IfcSpace')
 windows=ifc_file.by_type('IfcWindow')
 doors=ifc_file.by_type('IfcDoor')
 opening=ifc_file.by_type('IfcOpeningElement')
+storeys=ifc_file.by_type('IfcBuildingStorey')
 
 
-building=walls+spaces+slab+opening#+doors#+roof+slab
+"""
+storey_space=defaultdict(list)
+[storey_space[s.Decomposes[0].RelatingObject].append(s) for s in spaces]
+# if spaces are extruded, defined an average lower and upper limit
+floor_ceiling=[]
+for storey in storey_space.keys():
+    depth=[]    
+    for space in storey_space[storey]:
+        print(space.Representation.Representations)
+        rep =[ shaperep for shaperep in space.Representation.Representations 
+                if ( shaperep. RepresentationIdentifier=='Body')
+                & (shaperep. RepresentationType=='SweptSolid')]
+        rep=rep[0]
+        depth.append(rep.Items[0].Depth)
+        print(rep.Items[0].Position.Location)
+        #print(rep
+    floor_ceiling.append( (storey.Elevation,
+                            storey.Elevation+sum(depth)/len(depth)))
+    print(floor_ceiling)
+# the storeys should be in increasing order of Elevation
+plane_position=gp_Pnt(0.0,0.0,floor_ceiling[0][0])
+plane_dir=gp_Dir(0.0,0.0,-1.0)
+lowerplane = gp_Pln(plane_position,plane_dir)
+lowerface= BRepBuilderAPI_MakeFace(lowerplane).Shape()
+plane_position.SetZ( floor_ceiling[0][0]-1.0)   
+lowerhs= BRepPrimAPI_MakeHalfSpace(lowerface,plane_position).Shape()
+
+plane_position=gp_Pnt(0.0,0.0,floor_ceiling[1][1])
+plane_dir=gp_Dir(0.0,0.0,1.0)
+upperplane = gp_Pln(plane_position,plane_dir)  
+upperface= BRepBuilderAPI_MakeFace(upperplane).Shape()
+plane_position.SetZ( floor_ceiling[1][1]+1.0)   
+upperhs= BRepPrimAPI_MakeHalfSpace(upperface,plane_position).Shape()
+  
+"""
+
+
+
+
+building=walls#+spaces#+slab+opening#+doors#+roof+slab
+#building=spaces
 
 
 buildingelementtype=['IfcBuildingElementProxy', 'IfcCovering', 'IfcBeam', 'IfcColumn', 'IfcCurtainWall', 
@@ -84,6 +131,17 @@ shapes=[ifcopenshell.geom.create_shape(setting, w).geometry for w in building if
 #wall_shapes=wall_shapes[:8]
 #wall_shapes=[ifcopenshell.geom.occ_utils.yield_subshapes(w) for w in wall_shapes]
 
+"""
+display, start_display, add_menu, add_function_to_menu = init_display()
+[display.DisplayShape(s) for s in shapes]
+display.FitAll()
+start_display()
+"""
+
+
+# TODO : cut below zero elevation (underground)
+# and cut above the upper limit of space's upper storey
+# --> limit size model if no opening are located on the roof
 
 wallwindow=defaultdict(list)
 for w in walls:
@@ -98,20 +156,49 @@ for w in walls:
                 
                 wallwindow[w.id()].append(re.RelatedBuildingElement.id())
 
+"""
+for i,w in enumerate(walls):
+    print("\n--- ",i)
+    print(w)
+    if hasattr(w, 'Representation') and w.Representation:
+        for r in w.Representation.Representations :
+            #if r.RepresentationType == "SweptSolid":
+                
+            print(r)#.Representations[1])
+"""
+
+# le cas de mur representés par des compound solid
+# semble fonctionner pour l'union
+#
+
+
+
 # get shapes as solid with possible conversion/extraction
 lsolid=[]
-for (i,w) in enumerate(shapes):
-    #print('\n',i,' Roottype of shape  ', w)
+
+
+for (i,wall) in enumerate(walls):
+
+    w=ifcopenshell.geom.create_shape(setting, wall).geometry
+    rbody=[r for r in wall.Representation.Representations if r.RepresentationIdentifier=='Body']
+    #print('\n', i,' representation body', [r.RepresentationType for r in rbody])
+    #print(' Roottype of shape  ', w)
+    topoex=utils.TopologyExplorer(w)
+    #print(' topoex Solids ',[sol.this for sol in topoex.solids()])
     if w.ShapeType()==0: # CompoundType
         lshape=list(ifcopenshell.geom.occ_utils.yield_subshapes(w))
         #print('--- compound with nbchildren ', w.NbChildren())
+        
         for (j,s) in enumerate(lshape):
+            #print('---- in coumpound shapetype ',s.ShapeType())
             if s.ShapeType()==0:# compound
                 
                 lshape2=list(ifcopenshell.geom.occ_utils.yield_subshapes(s))
                 shapetype=[s2.ShapeType() for s2 in lshape2]
+                
                 #print('--- number of shape in subcompound ', len(shapetype))
-                if(shapetype==[2]):#unique solid
+                #print('--- shapetype : ',shapetype)
+                if(shapetype==[2]):#unique shape and solid
                     lsolid.append(lshape2[0])
                     continue
                 if( (len(shapetype)>3) & (len(shapetype)<50)& (list(set(shapetype))==[4])):
@@ -123,12 +210,12 @@ for (i,w) in enumerate(shapes):
                         sewer.Add(sh)
                     sewer.Perform()
                     sewed=sewer.SewedShape()
-                    #print('--- ',j,' ',sewed)
+                    print('--- ',j,' ',sewed)
                     if(sewed.ShapeType()==0):
                         lshell=list(ifcopenshell.geom.occ_utils.yield_subshapes(sewed))
                         for shell in lshell:
                             lsolid.append(BRepBuilderAPI_MakeSolid(shell).Solid())
-                        #print('--- ',j,' few sewed shape added ',s)
+                            #print('--- ',j,' few sewed shape added ',s)
                     else:
                         solid=BRepBuilderAPI_MakeSolid(sewed).Solid()
                         lsolid.append(solid)
@@ -136,14 +223,21 @@ for (i,w) in enumerate(shapes):
                 else:
                     continue
                 
-            else:
+            elif s.ShapeType()==2: # solid type
                 #print('--- ',i,' one added shape ',s)
+                #print("++++++++++++++++++++++++++++++++++++++++")
+                
                 lsolid.append(s)
+                
+            else:
+                #print("--- unmanaged shapetype")
+                scddsc
+
 
 
 #unioning
 args=TopTools_ListOfShape()
-[args.Append(b) for b in lsolid[::2]]
+[args.Append(b) for b in lsolid[0::2]]
 
 tools=TopTools_ListOfShape()
 [tools.Append(b) for b in lsolid[1::2]]
@@ -154,18 +248,46 @@ bop=BOPAlgo_BOP()
 bop.SetOperation(BOPAlgo_Operation.BOPAlgo_FUSE)
 bop.SetArguments(args)
 bop.SetTools(tools)
-bop.SetFuzzyValue(0.00001)
+#bop.SetFuzzyValue(0.00001)
 #bop.SetGlue(BOPAlgo_GlueEnum.BOPAlgo_GlueFull)
 
 bop.Perform()
 unionsolid=bop.Shape()
 print(bop.DumpErrorsToString())
 
+display, start_display, add_menu, add_function_to_menu = init_display()
 
-# TODO : cut below zero elevation (underground)
-# and cut above the upper limit of space's upper storey
-# --> limit size model if no opening are located on the roof
+# [display.DisplayShape(x,transparency=0.0) for x in lsolid]
+# [display.DisplayShape(x,transparency=0.9,color='BLUE') for x in shapes]
 
+display.DisplayShape(unionsolid,color='GREEN')
+display.FitAll()
+start_display()
+
+
+
+
+
+
+"""
+##### cut by two halfplanes
+bop=BOPAlgo_BOP()
+bop.SetOperation(BOPAlgo_Operation.BOPAlgo_CUT)
+bop.AddArgument(unionsolid) 
+bop.AddTool(lowerhs)
+bop.AddTool(upperhs)
+
+bop.SetFuzzyValue(0.00001)
+#bop.SetGlue(BOPAlgo_GlueEnum.BOPAlgo_GlueFull)
+
+bop.Perform()
+cuttedunionsolid=bop.Shape()
+print(bop.DumpErrorsToString())
+
+
+
+unionsolid=cuttedunionsolid
+"""
 
 # Create the bounding box of the unioned model
 box=Bnd_Box()
@@ -198,12 +320,15 @@ commonshape=common.Shape()
 print(bop.DumpErrorsToString())
 """
 
+
+"""
 top=TopologyExplorer(unionsolid)
 unionshell = top.shells()
 
 
 top=TopologyExplorer(diffshape)
 diffshell = top.shells()
+
 
 common=BOPAlgo_BOP()
 common.SetOperation(BOPAlgo_Operation.BOPAlgo_COMMON)
@@ -213,7 +338,7 @@ tools=TopTools_ListOfShape()
 [tools.Append(shell) for shell in diffshell]
 common.SetArguments(args)
 common.SetTools(tools)
-common.SetFuzzyValue(0.0001)
+common.SetFuzzyValue(0.001)
 common.Perform()
 commonshell=common.Shape()
 BOPTools_AlgoTools_OrientFacesOnShell(commonshell)
@@ -228,6 +353,8 @@ print(bop.DumpErrorsToString())
 wall_shapes=[ifcopenshell.geom.create_shape(setting, ifc_file.by_guid(w_id)).geometry 
                 for w_id in wallwindow.keys() if ifc_file.by_guid(w_id).Representation 
                 is not None]
+
+
 
 
 glassface=[]
@@ -249,7 +376,7 @@ for (w_id,ws) in zip(wallwindow.keys(),wall_shapes):
     common.SetArguments(args)
     common.SetTools(tools)
     
-    common.SetFuzzyValue(0.0001)
+    common.SetFuzzyValue(0.00001)
     common.Perform()
     commonshell2=common.Shape()
     lshell.append(commonshell2)
@@ -391,7 +518,7 @@ for (i,gf) in enumerate(to_compute):
     
     
     
-    
+    """
 
 #display.DisplayShape(wall_shapes[7], transparency=0.5)
 
@@ -401,23 +528,31 @@ windowshapes=[ifcopenshell.geom.create_shape(setting, win).geometry for win in w
 
 display, start_display, add_menu, add_function_to_menu = init_display()
 
+
+#display.DisplayShape(cuttedunionsolid,transparency=0.5)
+
 #display
-#display.DisplayShape(unioned_walls,transparency=0.98)
-#display.DisplayShape(boxshape, transparency=0.5)
+#[display.DisplayShape(s) for s in lsolid]
+
+#display.DisplayShape(unionsolid,transparency=0.5)
+#display.DisplayShape(boxshape, transparency=0.9)
 #display.DisplayShape(diffshape, transparency=0.5)
+
+"""
+#display.DisplayShape(unionshell, transparency=0.5)
 #display.DisplayShape(commonshell, transparency=0.5,color='BLUE')
 #display.DisplayShape(commonshell2, transparency=0.5)
 [display.DisplayShape(gf,color='YELLOW') for gf in lgf]
 #[display.DisplayShape(w, transparency=0.9) for w in wall_shapes]
-#[display.DisplayShape(shell) for shell in lshell]
+[display.DisplayShape(shell) for shell in lshell]
 [display.DisplayShape(extru,color='BLACK',transparency=0.95) for extru in lextru1]
-[display.DisplayShape(extru,color='RED',transparency=0.9) for extru in lextru2]
+#[display.DisplayShape(extru,color='RED',transparency=0.9) for extru in lextru2]
 #[display.DisplayShape(extru) for extru in lextru]
 #[display.DisplayShape(w) for w in windowshapes]
 [display.DisplayShape(intersection,transparency=0.5,color='GREEN') for intersection in linter]
 #[display.DisplayShape(w, transparency=0.5) for w in wall_shapes]
-[display.DisplayShape(x,color='BLACK') for x in lcut]
-
+#[display.DisplayShape(x,color='BLACK') for x in lcut]
+"""
 
 display.FitAll()
 #ifcopenshell.geom.utils.main_loop()
