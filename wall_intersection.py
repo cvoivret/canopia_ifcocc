@@ -33,7 +33,12 @@ from OCC.Core.TopExp import topexp_MapShapes
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 
+import OCC.Core.ShapeFix as shapefix
+import OCC.Core.ShapeBuild as shapebuild
+
 import OCC.Extend.TopologyUtils as utils
+
+import numpy as np
 
 
 #from OCC.Core.TopoDS import Solid
@@ -56,12 +61,12 @@ setting.set(setting.USE_PYTHON_OPENCASCADE, True)
 #display=ifcopenshell.geom.utils.initialize_display()
 
 #ifc_file= ifcopenshell.open('data/office_ifcwiki.ifc')
-#ifc_file= ifcopenshell.open('data/villa.ifc')
+ifc_file= ifcopenshell.open('data/villa.ifc')
 
 #ifc_file= ifcopenshell.open('data/DCE_CDV_BAT.ifc')
 
 #ifc_file= ifcopenshell.open('data/Test Project - Scenario 1.ifc')
-ifc_file= ifcopenshell.open('data/Test Project - Scenario 1_wallmod.ifc')
+#ifc_file= ifcopenshell.open('data/Test Project - Scenario 1_wallmod.ifc')
 
 
 #opening_list=ifc_file.by_type('IfcOpeningElement')
@@ -159,23 +164,16 @@ for w in walls:
                 wallwindow[w.id()].append(re.RelatedBuildingElement.id())
 
 """
-for i,w in enumerate(walls):
-    print("\n--- ",i)
-    print(w)
-    if hasattr(w, 'Representation') and w.Representation:
-        for r in w.Representation.Representations :
-            #if r.RepresentationType == "SweptSolid":
-                
-            print(r)#.Representations[1])
+not working because of pointer and local variable, probably
+def face_normal(face):
+    srf = BRep_Tool().Surface(f)
+    plane = Geom_Plane.DownCast(srf)
+    fn = plane.Axis().Direction()
+    if(f.Orientation()==1):
+        return fn.Reverse()
+    else:
+        return fn
 """
-
-# le cas de mur representés par des compound solid
-# semble fonctionner pour l'union
-#
-
-
-
-# get shapes as solid with possible conversion/extraction
 
 def fuse_listOfShape(los,FuzzyValue=0.000001):
     fuser=BOPAlgo_BOP()
@@ -188,6 +186,7 @@ def fuse_listOfShape(los,FuzzyValue=0.000001):
     fuser.SetTools(los_2)
     fuser.SetFuzzyValue(FuzzyValue)
     fuser.Perform()
+    
     return fuser.Shape()
 
 def get_external_shell(building):
@@ -272,7 +271,7 @@ def get_external_shell(building):
     diff.SetOperation(BOPAlgo_Operation.BOPAlgo_CUT)
     diff.AddArgument(boxshape)
     diff.AddTool(unionsolid)
-    diff.SetFuzzyValue(0.0001)
+    diff.SetFuzzyValue(0.000001)
     diff.Perform()
     diffshape=diff.Shape()
     
@@ -297,7 +296,7 @@ def get_external_shell(building):
     [tools.Append(shell) for shell in diffshell]
     common.SetArguments(args)
     common.SetTools(tools)
-    common.SetFuzzyValue(0.001)
+    common.SetFuzzyValue(0.000001)
     common.Perform()
     commonshell=common.Shape()
     BOPTools_AlgoTools_OrientFacesOnShell(commonshell)
@@ -317,7 +316,7 @@ wall_shapes=[ifcopenshell.geom.create_shape(setting, ifc_file.by_guid(w_id)).geo
                 is not None]
 
 glassface=[]
-
+glassface_bywindowid=defaultdict(list)
 
 lshell=[]
 lextru=[]
@@ -327,7 +326,8 @@ tools=TopTools_ListOfShape()
 tools.Append(external_shell) 
 
 common=BOPAlgo_BOP()
-gpp=GProp_GProps()       
+gpp=GProp_GProps()   
+    
 for (w_id,ws) in zip(wallwindow.keys(),wall_shapes):
     common.Clear()
     args=TopTools_ListOfShape()
@@ -338,7 +338,7 @@ for (w_id,ws) in zip(wallwindow.keys(),wall_shapes):
     common.SetArguments(args)
     common.SetTools(tools)
     
-    common.SetFuzzyValue(0.00001)
+    common.SetFuzzyValue(0.000001)
     common.Perform()
     commonshell2=common.Shape()
     lshell.append(commonshell2)
@@ -354,9 +354,12 @@ for (w_id,ws) in zip(wallwindow.keys(),wall_shapes):
         for f in faces:
             srf = BRep_Tool().Surface(f)
             plane = Geom_Plane.DownCast(srf)
-            face_norm_coord = plane.Axis().Direction().Coord()
+            fn = plane.Axis().Direction()
+            if(f.Orientation()==1):
+                fn.Reverse()
+            face_norm_coord=fn.Coord()
             # maybe necessary to round...
-            #face_norm_coord = tuple(round(c,10) for c in face_norm_coord)
+            face_norm_coord = tuple(round(c,10) for c in face_norm_coord)
             brepgprop_SurfaceProperties(f,gpp)
             norm_area[face_norm_coord]+=gpp.Mass()
             norm_map[face_norm_coord].append(f)
@@ -365,39 +368,59 @@ for (w_id,ws) in zip(wallwindow.keys(),wall_shapes):
         #print(norm_area)
         #print(wall_norm)
         #print(norm_map[wall_norm])
+                    
+        # wall_norm is rounded but almost equal to all element in the list
+        # taking the first
+        first_wall_face =norm_map[wall_norm][0]
+        srf = BRep_Tool().Surface(first_wall_face)
+        plane = Geom_Plane.DownCast(srf)
+        wall_norm = plane.Axis().Direction()
+        if(first_wall_face.Orientation()==1):
+            wall_norm.Reverse()
         
+        windowshapes=[ifcopenshell.geom.create_shape(setting, ifc_file.by_guid(win_id)).geometry 
+            for win_id in wallwindow[w_id]]
             
-        for f in norm_map[wall_norm]:
-            srf = BRep_Tool().Surface(f)
-            #srf.D0(0,0, p)
-            plane = Geom_Plane.DownCast(srf)
-            face_norm = plane.Axis().Direction()
+        #print("winwhapes ",windowshapes)
+        #print("win window ",wallwindow[w_id])
             
-            windowshapes=[ifcopenshell.geom.create_shape(setting, ifc_file.by_guid(win_id)).geometry 
-                for win_id in wallwindow[w_id]] 
-            lwin.extend(windowshapes)
-            for i,winshape in enumerate(windowshapes):
-                faceswin=list(TopologyExplorer(winshape).faces())
-                #print(" nb face par fenetre ", len(faceswin))
-                facelist=[]
-                facearea=[]
-                #facenormal=[]
-                for fw in faceswin:
-                    srf = BRep_Tool().Surface(fw)
-                    plane2 = Geom_Plane.DownCast(srf)
-                    face_norm2 = plane2.Axis().Direction()
-                    #print(" face2 ",face_norm2.Coord())
-                    if(face_norm2.IsEqual(face_norm,0.0001)):
-                        #print(" face found for window ",i)
-                        brepgprop_SurfaceProperties(fw,gpp)
-                        #print(" area ", gpp.Mass())
-                        facearea.append(gpp.Mass())
-                        facelist.append(fw)
-                        #facenormal.append(face_norm)
-                maxarea=max(facearea)
-                glassface.extend([ f for area,f in zip(facearea,facelist) if 
-                            area>maxarea*.9] )
+        lwin.extend(windowshapes)
+        for i,winshape in enumerate(windowshapes):
+            faceswin=list(TopologyExplorer(winshape).faces())
+            #print(" nb face par fenetre ", len(faceswin))
+            facelist=[]
+            facearea=[]
+            #facenormal=[]
+            for fw in faceswin:
+                top=TopologyExplorer(fw)
+                #print(top.number_of_wires())
+                if top.number_of_wires()>1:
+                    continue
+                srf = BRep_Tool().Surface(fw)
+                plane2 = Geom_Plane.DownCast(srf)
+                win_norm = plane2.Axis().Direction()
+                if(fw.Orientation()==1):
+                    win_norm.Reverse()
+                
+                #print(" face2 ",face_norm2.Coord())
+                if(win_norm.IsEqual(wall_norm,0.000001)):
+                    
+                    #print(" face found for window ",i)
+                    brepgprop_SurfaceProperties(fw,gpp)
+                    #print(" area ", gpp.Mass())
+                    facearea.append(round(gpp.Mass(),5))
+                    facelist.append(fw)
+                    #facenormal.append(face_norm)
+            #print('\n window ',i)
+            #print(facearea)
+            maxarea=max(facearea)
+            #print([ f for area,f in zip(facearea,facelist) if 
+            #            area>maxarea*.9])
+            
+            glassface.extend([ f for area,f in zip(facearea,facelist) if 
+                        area>maxarea*.9] )
     
+
 
 # extrusion of each window
 
@@ -416,18 +439,27 @@ linter=[]
 lsewed=[]
 lcut=[]
 lgf=[]
-to_compute=glassface[0:10]
+to_compute=glassface[0:100]
 
 sun_dir=gp_Dir(-1,-1,-1)
 
+npos=100
+x=np.cos(np.linspace(0,2*np.pi,npos))
+y=np.sin(np.linspace(0,2*np.pi,npos))
+l_sun_dir=[gp_Dir(xi,yi,-1) for (xi,yi) in zip(x,y)]
+
 for (i,gf) in enumerate(to_compute):
-    print(i ,' / ',len(to_compute)) 
+    print('\n',i ,' / ',len(to_compute)) 
     lgf.append(gf)
     
     srf = BRep_Tool().Surface(gf)
     plane = Geom_Plane.DownCast(srf)
     face_norm = plane.Axis().Direction()
-    if face_norm.Dot(sun_dir)<0.:
+    if(gf.Orientation()==1):
+        face_norm.Reverse()
+    
+    if face_norm.Dot(sun_dir)>0.:
+        print(' Not exposed')
         continue
     
     ext_vec=gp_Vec(sun_dir)
@@ -455,15 +487,14 @@ for (i,gf) in enumerate(to_compute):
     lfacetoextr=[]
     sewer=BRepBuilderAPI_Sewing()
     for ff in intersection_faces:
-        #print('avant ',ff.Orientation())
-        ff.Orientation()
-        #print('apres ',ff.Orientation())
         srf3 = BRep_Tool().Surface(ff)
         plane3 = Geom_Plane.DownCast(srf3)
         fn = plane3.Axis().Direction()
         if(ff.Orientation()==1):
             fn.Reverse()
-        if(fn.Dot(sun_dir)<0.):
+        
+        if(fn.Dot(sun_dir)<-1e-5):# avoid face aligned with extrusion faces
+            
             sewer.Add(ff)
         
     sewer.Perform()
@@ -471,27 +502,44 @@ for (i,gf) in enumerate(to_compute):
     lsewed.append(sewed)
     
     ext2=BRepPrimAPI_MakePrism(sewed,ext_vec,False,True).Shape()
+    
+    # shape fixing
+    reshape = shapebuild.ShapeBuild_ReShape()
+    reshaped=shapefix.shapefix_RemoveSmallEdges(ext2,0.000001,reshape)
+    
     lextru2.append(ext2)
     if ext2.ShapeType()==2: # unique solid
         unioned=ext2
     else:
-        list_of_shape_to_fuse=list(ifcopenshell.geom.occ_utils.yield_subshapes(ext2))
+        l=list(ifcopenshell.geom.occ_utils.yield_subshapes(ext2))
+        ##print(' lll ',l)
+        list_of_shape_to_fuse=[]
+        for s in l:
+            if utils.is_compsolid(s):
+                list_of_shape_to_fuse.extend(list(ifcopenshell.geom.occ_utils.yield_subshapes(s)))
+            else:
+                list_of_shape_to_fuse.append(s)
+        ##print(" listofshape ", list_of_shape_to_fuse)
         unioned=fuse_listOfShape(list_of_shape_to_fuse,0.000001)
-      
+    
+    
     
     cut=BOPAlgo_BOP()
     cut.SetOperation(BOPAlgo_Operation.BOPAlgo_COMMON)
     cut.AddArgument(gf) ## qui coupe qui ? histoire de dimension ?
     cut.AddTool(unioned)
        
-    cut.SetFuzzyValue(0.0001)
+    cut.SetFuzzyValue(0.000001)
     cut.Perform()
+    print(cut.DumpErrorsToString())
+    
     cutshape=cut.Shape()
     
     lcut.append(cutshape)
     
     lcutted=list(ifcopenshell.geom.occ_utils.yield_subshapes(cutshape))
     shadow_area=0.0
+    print(lcutted)
     for f in lcutted:
         brepgprop_SurfaceProperties(f,gpp)
         shadow_area+=gpp.Mass()
@@ -517,12 +565,12 @@ display, start_display, add_menu, add_function_to_menu = init_display()
 #display
 #[display.DisplayShape(s,transparency=0.5) for s in lsolid]
 #display.DisplayShape(external_shell, transparency=0.9,color='BLUE')
-#[display.DisplayShape(shell,transparency=0.5,color='BLUE') for shell in lshell]
+[display.DisplayShape(shell,transparency=0.9,color='RED') for shell in lshell]
 #[display.DisplayShape(gf,color='YELLOW') for gf in glassface]
 #[display.DisplayShape(gf,color='RED',transparency=0.9) for gf in lwin]
 [display.DisplayShape(extru,color='BLACK',transparency=0.95) for extru in lextru1]
-[display.DisplayShape(extru,color='GREEN',transparency=0.9) for extru in linter]
-[display.DisplayShape(extru,color='BLUE',transparency=0.1) for extru in lsewed]
+#[display.DisplayShape(extru,color='GREEN',transparency=0.9) for extru in linter]
+#[display.DisplayShape(extru,color='BLUE',transparency=0.1) for extru in lsewed]
 #[display.DisplayShape(extru,color='RED',transparency=0.5) for extru in lextru2]
 
 [display.DisplayShape(x,color='BLACK') for x in lcut]
