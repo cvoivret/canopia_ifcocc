@@ -1,4 +1,7 @@
 from collections import defaultdict
+import itertools
+from joblib import Parallel
+import multiprocessing
 
 import ifcopenshell
 import ifcopenshell.geom
@@ -44,6 +47,8 @@ from OCC.Core.BRepBndLib import brepbndlib
 import OCC.Core.ShapeFix as shapefix
 import OCC.Core.ShapeBuild as shapebuild
 
+from OCC.Core.IntCurvesFace import IntCurvesFace_ShapeIntersector
+
 import OCC.Extend.TopologyUtils as utils
 
 import numpy as np
@@ -69,8 +74,8 @@ setting.set(setting.USE_PYTHON_OPENCASCADE, True)
 #display=ifcopenshell.geom.utils.initialize_display()
 
 #ifc_file= ifcopenshell.open('data/office_ifcwiki.ifc')
-#ifc_file= ifcopenshell.open('data/villa.ifc')
-ifc_file= ifcopenshell.open('data/Brise_soleils_divers.ifc')
+ifc_file= ifcopenshell.open('data/villa.ifc')
+#ifc_file= ifcopenshell.open('data/Brise_soleils_divers.ifc')
 
 #ifc_file= ifcopenshell.open('data/DCE_CDV_BAT.ifc')
 
@@ -91,41 +96,6 @@ opening=ifc_file.by_type('IfcOpeningElement')
 storeys=ifc_file.by_type('IfcBuildingStorey')
 proxys=ifc_file.by_type('IfcBuildingElementProxy')
 
-"""
-storey_space=defaultdict(list)
-[storey_space[s.Decomposes[0].RelatingObject].append(s) for s in spaces]
-# if spaces are extruded, defined an average lower and upper limit
-floor_ceiling=[]
-for storey in storey_space.keys():
-    depth=[]    
-    for space in storey_space[storey]:
-        print(space.Representation.Representations)
-        rep =[ shaperep for shaperep in space.Representation.Representations 
-                if ( shaperep. RepresentationIdentifier=='Body')
-                & (shaperep. RepresentationType=='SweptSolid')]
-        rep=rep[0]
-        depth.append(rep.Items[0].Depth)
-        print(rep.Items[0].Position.Location)
-        #print(rep
-    floor_ceiling.append( (storey.Elevation,
-                            storey.Elevation+sum(depth)/len(depth)))
-    print(floor_ceiling)
-# the storeys should be in increasing order of Elevation
-plane_position=gp_Pnt(0.0,0.0,floor_ceiling[0][0])
-plane_dir=gp_Dir(0.0,0.0,-1.0)
-lowerplane = gp_Pln(plane_position,plane_dir)
-lowerface= BRepBuilderAPI_MakeFace(lowerplane).Shape()
-plane_position.SetZ( floor_ceiling[0][0]-1.0)   
-lowerhs= BRepPrimAPI_MakeHalfSpace(lowerface,plane_position).Shape()
-
-plane_position=gp_Pnt(0.0,0.0,floor_ceiling[1][1])
-plane_dir=gp_Dir(0.0,0.0,1.0)
-upperplane = gp_Pln(plane_position,plane_dir)  
-upperface= BRepBuilderAPI_MakeFace(upperplane).Shape()
-plane_position.SetZ( floor_ceiling[1][1]+1.0)   
-upperhs= BRepPrimAPI_MakeHalfSpace(upperface,plane_position).Shape()
-  
-"""
 
 
 
@@ -442,7 +412,115 @@ for (w_id,ws) in zip(wallwindow.keys(),wall_shapes):
             #            area>maxarea*.9])
             glassface_bywindowid[win_id].extend(gfaces)
             glassface.extend(gfaces)
+
     
+# put it in a class to store the intermediate results ?
+def shadow_caster(sun_dir,building,theface,theface_norm,min_area = 1e-3):
+    """
+    sun_dir = one vector (downward direction)
+    building = a solids that possibily make shadow on face
+    face = a face to cast shadow on from building along sun_dir
+    face_norm = pointing to the exterior of the face (outside)
+    
+    return  : a face with zero or positive area, None if no shadow
+    
+    """
+    
+    # face not exposed to the sun
+    if theface_norm.Dot(sun_dir)>0.:
+                
+        return theface# void face with zero area
+    
+    ext_vec=gp_Vec(sun_dir)
+    ext_vec.Multiply(10)
+    
+    # extrusion of 
+    extrusion1=BRepPrimAPI_MakePrism(theface,-ext_vec,False,True).Shape()
+    
+    intersector=BOPAlgo_BOP()
+    intersector.SetOperation(BOPAlgo_Operation.BOPAlgo_COMMON)
+    intersector.AddTool(extrusion1) 
+    intersector.AddArgument(building)
+    intersector.Perform()
+    intersection=intersector.Shape()
+        
+    intersection_faces=list(TopologyExplorer(intersection).faces())
+               
+    
+    larea=[]
+    lfaces=[]
+    
+    for ff in intersection_faces:
+        srf3 = BRep_Tool().Surface(ff)
+        umin,umax,vmin,vmax=breptools_UVBounds(ff)
+        props=GeomLProp_SLProps(srf3,0.5*(umax-umin),0.5*(vmax-vmin),1,0.001)
+        fn=props.Normal()
+                
+        if(ff.Orientation()==1):
+            fn.Reverse()
+        # avoid face nearly parallel with extrusion generatrix
+        # ie face with normal perpendicular with extrusion direction
+        if(fn.Dot(sun_dir)<-1e-5):
+            brepgprop_SurfaceProperties(ff,gpp)
+            larea.append(gpp.Mass())
+            lfaces.append(ff)
+    
+    # relative or absolute minimal area
+    # for large window, better to have absolute
+    # face below 1cm2 ?
+    large_faces=[ff  for ff,a in zip(lfaces,larea) if a/gf_area>min_area]
+    
+    # No faces casting shadows, return a void face
+    if(len(large_faces)==0):
+        return TopoDS_Face() # void face with zero area
+    
+    # transform a collection of faces into one shell
+    sewer=BRepBuilderAPI_Sewing()
+    [sewer.Add(f) for f in large_faces]
+    sewer.Perform()
+    sewed=sewer.SewedShape()
+    
+    # extrude back to theface
+    extrusion2=BRepPrimAPI_MakePrism(sewed,ext_vec,False,True).Shape()
+        
+    # fusing multiple solid to acheive better results in the final BOP intersection 
+    maps=TopTools_IndexedMapOfShape()
+    topexp_MapShapes(extrusion2, TopAbs_SOLID, maps)
+    los = TopTools_ListOfShape()
+    [los.Append(maps.FindKey(i)) for i in range(1,maps.Size()+1)]
+    
+    maker=BOPAlgo_MakerVolume()
+    maker.SetArguments(los)
+    maker.Perform()
+    extrusion2=maker.Shape()
+    
+    # intersection of second extrusion with theface          
+    intersector.Clear()
+    intersector.SetOperation(BOPAlgo_Operation.BOPAlgo_COMMON)
+    intersector.AddArgument(theface) ## qui coupe qui ? histoire de dimension ?
+    intersector.AddTool(extrusion2)
+    intersector.SetFuzzyValue(1e-8)
+    intersector.Perform()
+    
+    intersectionfaces=intersector.Shape()
+    
+    """
+    if(intersectionface.NbChildren()==0):
+        
+        return -1
+    """
+    unify=ShapeUpgrade_UnifySameDomain(intersectionfaces)
+    unify.Build()
+    shadowface=unify.Shape()
+    
+    return shadowface
+
+def shadow_caster_ray(sun_dir,building,theface,theface_norm,min_area = 1e-3,Nray):
+    #discretize the face with Nray points
+    #build lines
+    #intersect line with the building
+    # count non void intersections
+
 
 
 # extrusion of each window
@@ -528,6 +606,8 @@ for (k,win_id) in enumerate(glassface_bywindowid.keys()):
             if face_norm.Dot(sun_dir)>0.:
                 print('   Not exposed',flush=True)
                 l_shadow_faces.append(gf)
+                results[win_id].append(1.)
+                print('     SFA : ',1.)
                 continue
             
             ext_vec=gp_Vec(sun_dir)
@@ -572,7 +652,7 @@ for (k,win_id) in enumerate(glassface_bywindowid.keys()):
                 if(ff.Orientation()==1):
                     fn.Reverse()
                 
-                if(fn.Dot(sun_dir)<-1e-5):# avoid face aligned with extrusion faces
+                if(fn.Dot(sun_dir)<-1e-5):# avoid face nearly parallel with extrusion faces
                     brepgprop_SurfaceProperties(ff,gpp)
                     larea.append(gpp.Mass())
                     #lcurve.append(props.MeanCurvature())
@@ -581,12 +661,17 @@ for (k,win_id) in enumerate(glassface_bywindowid.keys()):
                     
                     lfaces.append(ff)
             
-            large_faces=[ff  for ff,a in zip(lfaces,larea) if a/gf_area>1e-2]
+            # relative or absolute minimal area
+            # for large window, better to have absolute
+            # face below 1cm2 ?
+            large_faces=[ff  for ff,a in zip(lfaces,larea) if a/gf_area>1e-3]
             
             if(len(large_faces)==0):
                 l_shadow_faces.append(gf)
                 lcut.append(gf)
-                #print(" no
+                results[win_id].append(0.)
+                print('     SFA : ',0.0)
+                print(" no shading faces ")
                 continue
             
             [sewer.Add(f) for f in large_faces]
@@ -604,12 +689,8 @@ for (k,win_id) in enumerate(glassface_bywindowid.keys()):
             lextru2.append(ext2)
             
             maps=TopTools_IndexedMapOfShape()
-            
-
             topexp_MapShapes(ext2,TopAbs_SOLID,maps)
-            
             list_of_shape_to_fuse=[maps.FindKey(i) for i in range(1,maps.Size()+1)]
-            
             
             los = TopTools_ListOfShape()
             [los.Append(s) for s in list_of_shape_to_fuse] 
@@ -633,6 +714,7 @@ for (k,win_id) in enumerate(glassface_bywindowid.keys()):
             if(cutshape.NbChildren()==0):
                 l_shadow_faces.append(gf)
                 lcut.append(gf)
+                results[win_id].append(-1)
                 print(" null cuttttt")
                 # print('---max area ',max(larea))
                 # print('---min area ',min(larea))
@@ -642,13 +724,13 @@ for (k,win_id) in enumerate(glassface_bywindowid.keys()):
                 continue
             
             lcut.append(cutshape)
-            
+            """
             lcutted=list(ifcopenshell.geom.occ_utils.yield_subshapes(cutshape))
             #lshad.extend(lcutted)
             if lcutted[0].ShapeType()!=4:
                 print(" PRoblemmmmmmmmm",flush=True)
             l_shadow_faces.append
-            
+            """
             unify=ShapeUpgrade_UnifySameDomain(cutshape)
             unify.Build()
             uni=unify.Shape()
@@ -657,6 +739,7 @@ for (k,win_id) in enumerate(glassface_bywindowid.keys()):
             brepgprop_SurfaceProperties(uni,gpp)
             shadow_area=gpp.Mass()
             sfa = shadow_area/gf_area
+            results[win_id].append(sfa)
             #print('     Shadow area ',shadow_area)
             #print('     Glass area ',glass_area)
             print('     SFA : ',sfa)
@@ -673,7 +756,106 @@ for (k,win_id) in enumerate(glassface_bywindowid.keys()):
             print('     SFA : ',sfa)
             results[win_id].append(sfa)
             """
+
+
+"""
+
+results2=defaultdict(list)
+results_faces=defaultdict(list)
+
+for (k,win_id) in enumerate(glassface_bywindowid.keys()):
+    lglassfaces=glassface_bywindowid[win_id]
+    print('\n window id ',win_id ,' ::  ',len(lglassfaces),flush=True) 
+    lgf.append(lglassfaces)
     
+    lshadowareabywindow=[]
+    for i,gf in enumerate(lglassfaces):
+        
+        brepgprop_SurfaceProperties(gf,gpp)
+        gf_area=gpp.Mass()
+        
+        
+        srf = BRep_Tool().Surface(gf)
+        plane = Geom_Plane.DownCast(srf)
+        face_norm = plane.Axis().Direction()
+        if(gf.Orientation()==1):
+            face_norm.Reverse()
+        
+        #exposed_building=cuttedshape
+        exposed_building=unioned_walls
+        lshadowfaces=[]
+        for j,sun_dir in enumerate(l_sun_dir):
+            counter=(j+1)*(k+1)
+            print('--- win number   ',k,'/',len(glassface_bywindowid.keys()),flush=True)
+            print('--- sun position ',j,'/',len(l_sun_dir),flush=True)
+            print('--- ', counter,'/',len(l_sun_dir)*len(glassface_bywindowid.keys()),flush=True)
+                                   
+            
+            shadow_face=shadow_caster(sun_dir,exposed_building,gf,face_norm,min_area = 1e-3)
+            lshadowfaces.append(shadow_face)
+        
+        results_faces[win_id].append(lshadowfaces)
+    
+        shadowareabyfaces=[]
+        for f in lshadowfaces:
+            brepgprop_SurfaceProperties(f,gpp)
+            shadowareabyfaces.append(gpp.Mass())
+        
+        results2[win_id].append(shadowareabyfaces)
+"""
+
+# test of joblib
+lparams=[]
+for (k,win_id) in enumerate(glassface_bywindowid.keys()):
+    lglassfaces=glassface_bywindowid[win_id]
+        
+    for i,gf in enumerate(lglassfaces):
+        
+        brepgprop_SurfaceProperties(gf,gpp)
+        gf_area=gpp.Mass()
+        
+        
+        srf = BRep_Tool().Surface(gf)
+        plane = Geom_Plane.DownCast(srf)
+        face_norm = plane.Axis().Direction()
+        if(gf.Orientation()==1):
+            face_norm.Reverse()
+        
+        #exposed_building=cuttedshape
+        exposed_building=unioned_walls
+        
+        for j,sun_dir in enumerate(l_sun_dir):
+            lparams.append((sun_dir,exposed_building,gf,face_norm,1e-3))
+"""
+if __name__ == '__main__':
+    __spec__ = "ModuleSpec(name='builtins', loader=<class '_frozen_importlib.BuiltinImporter'>)"
+    with multiprocessing.Pool() as pool:
+        for result in pool.starmap(shadow_caster, lparams):
+            print(result)         
+"""
+
+shad=[shadow_caster(*p) for p in lparams]
+
+#shad=Parallel(n_jobs=2, prefer="threads")(shadow_caster(*p) for p in lparams)
+
+
+"""
+averaged={}
+for k in results_faces.keys():
+    glass_area=0.0  
+    for f in glassface_bywindowid[win_id]:
+        brepgprop_SurfaceProperties(f,gpp)
+        glass_area+=gpp.Mass()
+    lshadow_area=[]
+    for faces in zip(*results_faces[k]):
+        shadow_area=0.0
+        for f in faces:
+            brepgprop_SurfaceProperties(f,gpp)
+            shadow_area+=gpp.Mass()
+        lshadow_area.append(shadow_area/glass_area)
+    #print(lshadow_area)    
+    averaged[k]=lshadow_area
+"""
     
 #a=np.array(list(results.values()))
 #np.savetxt('results.txt',a)
@@ -696,8 +878,8 @@ display, start_display, add_menu, add_function_to_menu = init_display()
 [display.DisplayShape(shell,transparency=0.95,color='RED') for shell in lface_wall]
 #[display.DisplayShape(gf,color='YELLOW') for gf in glassface]
 #[display.DisplayShape(gf,color='RED',transparency=0.9) for gf in lwin]
-#[display.DisplayShape(extru,color='BLACK',transparency=0.95) for extru in lextru1]
-#[display.DisplayShape(extru,color='GREEN',transparency=0.9) for extru in linter]
+[display.DisplayShape(extru,color='BLACK',transparency=0.95) for extru in lextru1]
+[display.DisplayShape(extru,color='GREEN',transparency=0.9) for extru in linter]
 [display.DisplayShape(extru,color='BLUE',transparency=0.1) for extru in lsewed]
 #[display.DisplayShape(extru,color='RED',transparency=0.5) for extru in lextru2]
 #[display.DisplayShape(extru,color='BLACK',transparency=0.5) for extru in lsec]
@@ -707,7 +889,7 @@ display, start_display, add_menu, add_function_to_menu = init_display()
 
 #[display.DisplayShape(x,color='BLACK') for x in lcut]
 [display.DisplayShape(x,color='BLACK') for x in lshad]
-#display.DisplayShape(unionsolid,transparency=0.5)
+display.DisplayShape(unioned_walls,transparency=0.9)
 #display.DisplayShape(boxshape, transparency=0.9)
 #display.DisplayShape(diffshape, transparency=0.5)
 
