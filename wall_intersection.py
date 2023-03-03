@@ -2,7 +2,7 @@ from collections import defaultdict
 import itertools
 from array import array
 import matplotlib.pyplot as plt
-
+import pandas as pd
 from joblib import Parallel
 import multiprocessing
 
@@ -428,7 +428,7 @@ def biggestfaces_along_normal(wallwindow,wallnormal):
             #print([ f for area,f in zip(facearea,facelist) if 
             #            area>maxarea*.9])
             glassface_bywindowid[win_id].extend(gfaces)
-            glassface.extend(gfaces)
+            
         #glassface_bywindowid[win_id]=fuse_listOfShape(glassface_bywindowid[win_id])
     return glassface_bywindowid
  
@@ -557,7 +557,47 @@ class shadow_on_faces:
                 #area+=gpp.Mass()
             #larea.append(area/self._glass_area)
         
+class shadow_on_faces_byray:
+    """ simple container to hold computation results """
+    def __init__(self,lfaces,lsun_dir):
+        self._lfaces=lfaces
+        self._lsun_dir=lsun_dir
+        self._shadow_tab=[[] for i in range(len(self._lfaces))]
+        
+        
+
+    def compute_shadow(self,exposed_building,min_area,N):
+        
+        self._N=N
+        for i,gf in enumerate(self._lfaces):
+            # re computation of the face normal
+            # shoudl be pointing outward
+            srf = BRep_Tool().Surface(gf)
+            plane = Geom_Plane.DownCast(srf)
+            face_norm = plane.Axis().Direction()
+            if(gf.Orientation()==1):
+                face_norm.Reverse()
                 
+            for j,sun_dir in enumerate(self._lsun_dir):
+                tab,lshape=shadow_caster_ray(sun_dir,exposed_building,gf,face_norm,N)
+                
+                self._shadow_tab[i].append(tab)
+                
+        #print(' faces ',self._shadow_faces)
+    
+    def compute_area_and_ratio(self):
+        
+        self._shadow_area_vector=[]
+        for vector_idx in range(len(self._lsun_dir)):
+            area_sum=0.0           
+            for face_idx in range(len(self._lfaces)):
+                area_sum+=self._shadow_tab[face_idx][vector_idx].sum()
+                
+            self._shadow_area_vector.append(area_sum)
+            
+        self._ratio_vector=[ a/(self._N*self._N) for a in self._shadow_area_vector]
+        #print(' shadow area vector ',self._shadow_area_vector)
+        print(' ratio vector ray',self._ratio_vector)                
         
         
 
@@ -577,12 +617,12 @@ setting.set(setting.USE_PYTHON_OPENCASCADE, True)
 
 #display=ifcopenshell.geom.utils.initialize_display()
 #ifc_file= ifcopenshell.open('data/office_ifcwiki.ifc')
-ifc_file= ifcopenshell.open('data/villa.ifc')
+#ifc_file= ifcopenshell.open('data/villa.ifc')
 #ifc_file= ifcopenshell.open('data/Brise_soleils_divers.ifc')
 #ifc_file= ifcopenshell.open('data/DCE_CDV_BAT.ifc')
 #ifc_file= ifcopenshell.open('data/Test Project - Scenario 1.ifc')
 #ifc_file= ifcopenshell.open('data/Test Project - Scenario 1_wallmod.ifc')
-#ifc_file= ifcopenshell.open('data/Model_article_window.ifc')
+ifc_file= ifcopenshell.open('data/Model_article_window.ifc')
 
 
 ifcwalls=ifc_file.by_type('IfcWall')
@@ -596,6 +636,34 @@ storeys=ifc_file.by_type('IfcBuildingStorey')
 proxys=ifc_file.by_type('IfcBuildingElementProxy')
 
 
+window_tagname={
+'Ref':257076,
+'A1':257738,
+'A2':256772,
+'A3':257901,
+'B':256912,
+'C60':257017,
+'C45':266662
+}
+
+window_id_name={
+793:'Ref',
+840:'A1' ,
+566:'A2' ,
+857:'A3' ,
+757:'B'  ,
+776:'C60',
+998:'C45'
+}
+
+
+
+tags=[w.Tag for w in windows]
+tags_ind=[ tags.index(str(t)) for t in window_tagname.values()]
+windows=[windows[indx] for indx in tags_ind]
+
+
+
 # partial building to compute external shell and exterior wall
 ifccorebuilding=ifcwalls+spaces#+slab
 building_shapes_core=[create_shape(setting, x).geometry for x in ifccorebuilding if x.Representation is not None]
@@ -605,7 +673,7 @@ lsolid_core=shapes_as_solids(building_shapes_core)
 
 
 # complete building to compute shadow on
-ifcextension= []+slab#+proxys
+ifcextension= []+slab+proxys
 extensionshape = [create_shape(setting, x).geometry for x in ifcextension if x.Representation is not None]
 extensionsolid=  shapes_as_solids(extensionshape)
 
@@ -613,22 +681,7 @@ ifcbuilding= ifccorebuilding + ifcextension
 building_shapes= building_shapes_core + extensionshape
 lsolid= lsolid_core + extensionsolid
 
-ext_sh=get_external_shell2(lsolid_core)
-
-# temporary global lists for display
-glassface=[]
-lface_wall=[]
-
-#lextru.clear()
-lextru1=[]
-lextru2=[]
-linter=[]
-lsewed=[]
-lcut=[]
-lgf=[]
-lsec=[]
-lhs=[]
-lshad=[]
+ext_sh= get_external_shell2(lsolid_core)
 
 wallwindow = link_wall_window(ifcwalls)
 
@@ -638,27 +691,27 @@ glassface_bywindowid=biggestfaces_along_normal(wallwindow,wallnorm)
 
 exposed_building=fuse_listOfShape(lsolid)
 
-sun_dir=gp_Dir(-1,-2,-1)
 
-npos=10
+
+
+npos=60
 h_angles=np.arange(0,360.,360./npos)
 #h_angles=[270.]
-v_angles=70.
+v_angles=[60.,65.,70.,75.,80.,85.]
 x=-np.cos(np.deg2rad(h_angles))
 y=-np.sin(np.deg2rad(h_angles))
 z=-np.sin(np.deg2rad(v_angles))
-#z=np.sin(# from horizontal
-l_sun_dir=[gp_Dir(xi,yi,z) for (xi,yi) in zip(x,y)]
 
-#print(' Angles ', h_angles)
+lparams=[(v,h) for (v,h) in itertools.product(v_angles,h_angles)]
+vvalues=[ v[0] for v in lparams]
+hvalues=[ v[1] for v in lparams]
 
-#l_sun_dir=[sun_dir]
-      
-        
-                
+l_sun_dir=[gp_Dir(xi,yi,zi) for (zi,(xi,yi)) in itertools.product(z,zip(x,y))]
+
+N=[4,6,8,10,15,20,30,40,50]               
         
 lsof=[]
-lparams=[]
+
 for (k,win_id) in enumerate(glassface_bywindowid.keys()):
     lglassfaces=glassface_bywindowid[win_id]
     
@@ -666,10 +719,72 @@ for (k,win_id) in enumerate(glassface_bywindowid.keys()):
     sof.compute_shadow(exposed_building,1e-3)
     sof.compute_area_and_ratio()
     sof.compute_complementary_face()
+    
     #sof.compute_area_and_ratio_byunion()
     lsof.append(sof)
-       
 
+llsofr=[[] for nray in N]    
+for i,nray in enumerate(N):
+    
+    for (k,win_id) in enumerate(glassface_bywindowid.keys()):
+        lglassfaces=glassface_bywindowid[win_id]
+        sofr = shadow_on_faces_byray(lglassfaces,l_sun_dir)
+        sofr.compute_shadow(exposed_building,1e-3,nray)
+        sofr.compute_area_and_ratio()
+        llsofr[i].append((nray,sofr))
+
+# Build a dataframe with all the results
+frames=[]
+for sof,id in zip(lsof,glassface_bywindowid.keys()):
+    name=window_id_name[id]
+    frames.append(pd.DataFrame(zip(vvalues,hvalues,
+                                itertools.repeat(name),
+                                itertools.repeat(0),
+                                sof._ratio_vector)))
+
+for i,(lsofr,n) in enumerate(zip(llsofr,N)):
+    
+    for (_,sof),id in zip(lsofr,glassface_bywindowid.keys()):
+        name=window_id_name[id]
+        frames.append(pd.DataFrame(zip(vvalues,hvalues,
+                                itertools.repeat(name),
+                                itertools.repeat(n),
+                                sof._ratio_vector)))
+    
+res=pd.concat(frames) 
+res.columns=['v_angle','h_angle','name','Nray','shad_ratio']
+res.to_csv('Results.csv')
+
+
+
+
+"""
+for i,r in enumerate(ray_ratio):
+    
+    plt.plot(ext_ratio.flatten(),(r/ext_ratio).flatten(),'o',label=N[i])
+plt.xlabel('SR_extrusion')
+plt.ylabel('SR_ray / SR_Extrusion')
+plt.legend()
+plt.show()
+"""
+#TODO
+# regenerer le fichier ifc en evitant les penetrations des protections dans les murs
+# etablir une correspondance fenetre,lettre
+# tracer l'évolution de l'ombre pour toutes les fenetres (pour illustration)
+# comparer extrusion et rayon : relative error (identifier les cas critiques)
+# discuter 
+
+
+"""
+        
+for sof,sofr in zip(lsof,lsofr):
+        rel_error=[ r/v for (v,r) in zip(sof._ratio_vector,sofr._ratio_vector)]
+        plt.plot(sof._ratio_vector,rel_error,'o')
+plt.show()
+"""
+
+"""
+# 3D display
 display, start_display, add_menu, add_function_to_menu = init_display()
 [display.DisplayShape(s,transparency=0.2) for s in building_shapes]
 for sof in lsof:
@@ -679,34 +794,7 @@ for sof in lsof:
 display.FitAll()
 #ifcopenshell.geom.utils.main_loop()
 start_display()
-
-
-        
-for sof in lsof:
-        plt.plot(h_angles,sof._ratio_vector,'o-')
-plt.show()
-
-
-#shad=[shadow_caster(*p) for p in lparams]
-lhits=[]
-lspheres=[]
-
-
-solid_sfa=[]
-ray_sfa=[]
-#valid for face scale only, not window scale
-Nrays=[5]#,10,15,20,50,100]
 """
-for N in Nrays:
-    locsfa=[]
-    for p in lparams:
-        hits,spheres = shadow_caster_ray(*p[:-1],N)
-        lhits.extend(hits)
-        locsfa.append(hits.sum()/hits.size)
-    ray_sfa.append(locsfa) 
-        #lspheres.extend(spheres)
-"""   
-
 
 """
 # numpy !
@@ -718,18 +806,5 @@ plt.legend()
 #plt.plot(solid)
 plt.show()
 """
-#res=[r/s for s,r in zip(solid_sfa,ray_sfa)]
 
-#shad=Parallel(n_jobs=2, prefer="threads")(shadow_caster(*p) for p in lparams)
-
-
-
-    
-#a=np.array(list(results.values()))
-#np.savetxt('results.txt',a)
-
-#display.DisplayShape(wall_shapes[7], transparency=0.5)
-
-
-#windowshapes=[ifcopenshell.geom.create_shape(setting, win).geometry for win in windows]
 
