@@ -1,10 +1,10 @@
 from collections import defaultdict
 import itertools
 from array import array
-import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
-from joblib import Parallel
-import multiprocessing
+
+from timeit import default_timer as timer
 
 #import ifcopenshell
 import ifcopenshell.geom
@@ -14,51 +14,69 @@ from ifcopenshell.geom.occ_utils import yield_subshapes
 
 
 from OCC.Display.SimpleGui import init_display
+from OCC.Core.Quantity import Quantity_Color,Quantity_TOC_RGB
 
 
 from OCC.Extend.TopologyUtils import TopologyExplorer, WireExplorer
 from OCC.Core.BRep import BRep_Tool
-import OCC.Core.BOPTools as bpt
-from OCC.Core.gp import gp_Pnt,gp_Dir,gp_Vec,gp_Pln,gp_Lin,gp_Trsf
+from OCC.Core.gp import gp_Pnt,gp_Dir,gp_Vec,gp_Pln,gp_Lin,gp_Trsf,gp_Ax3
 from OCC.Core.Geom import Geom_Plane
 import OCC.Core.BRepPrimAPI as brpapi
+from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_NormalProjection
 
-from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox,BRepPrimAPI_MakePrism,BRepPrimAPI_MakeHalfSpace,BRepPrimAPI_MakeSphere
+from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox,BRepPrimAPI_MakePrism,BRepPrimAPI_MakeHalfSpace,BRepPrimAPI_MakeSphere,BRepPrimAPI_MakeCylinder
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.BRepExtrema import BRepExtrema_ShapeProximity
-from OCC.Core.BRepGProp import brepgprop_SurfaceProperties,brepgprop_VolumeProperties
+from OCC.Core.BRepGProp import brepgprop_SurfaceProperties,brepgprop_VolumeProperties,brepgprop_LinearProperties
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.GeomLProp import GeomLProp_SLProps
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 from OCC.Core.BRepTools import breptools_UVBounds
 from OCC.Core.BRepCheck import BRepCheck_Analyzer
-from OCC.Core.Geom import Geom_Transformation,Geom_Line
+from OCC.Core.Geom import Geom_Transformation,Geom_Line,Geom_CylindricalSurface
 
 from OCC.Core.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 
 from OCC.Core.TopoDS import TopoDS_Face
  
 from OCC.Core.BOPAlgo import BOPAlgo_MakerVolume,BOPAlgo_BOP,BOPAlgo_Operation,BOPAlgo_GlueEnum
+from OCC.Core.BOPAlgo import BOPAlgo_CellsBuilder
+from OCC.Core.BOPAlgo import BOPAlgo_ArgumentAnalyzer
+
 from OCC.Core.BOPTools import BOPTools_AlgoTools_OrientFacesOnShell
+from OCC.Core.BOPTools import BOPTools_AlgoTools_IsInvertedSolid
+
 from OCC.Core.TopTools import TopTools_ListOfShape,TopTools_IndexedMapOfShape,TopTools_MapOfShape
+from OCC.Core.TopOpeBRepTool import TopOpeBRepTool_PurgeInternalEdges
 
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Sewing,BRepBuilderAPI_MakeSolid,BRepBuilderAPI_MakeFace
-from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut,BRepAlgoAPI_Section
+from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut,BRepAlgoAPI_Section,BRepAlgoAPI_Common
 from OCC.Core.TopExp import topexp_MapShapes
-from OCC.Core.TopAbs import TopAbs_SOLID,TopAbs_FACE,TopAbs_SHELL
+from OCC.Core.TopAbs import TopAbs_SOLID,TopAbs_FACE,TopAbs_SHELL,TopAbs_WIRE
 
+from OCC.Core.BRepExtrema import BRepExtrema_SelfIntersection,BRepExtrema_MapOfIntegerPackedMapOfInteger
+
+from OCC.Core.GeomAdaptor import GeomAdaptor_Surface
+from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 
-import OCC.Core.ShapeFix as shapefix
+import OCC.Core.ShapeFix as ShapeFix_Shape
 import OCC.Core.ShapeBuild as shapebuild
 
 from OCC.Core.IntCurvesFace import IntCurvesFace_ShapeIntersector
 
 import OCC.Extend.TopologyUtils as utils
 
-import numpy as np
+from OCC.Extend.DataExchange import write_stl_file
+
+from OCC.Core import ShapeExtend
+from OCC.Core.Precision import precision_Confusion
+
+
+
 
 
 """
@@ -107,13 +125,38 @@ def shapes_as_solids(lshape):
             sewed=sewer.SewedShape()
             if(sewed.ShapeType()==0):
                 lshell=list(yield_subshapes(sewed))
-                #print(len(lshell))
+                
                 for shell in lshell:
                     lsolid.append(BRepBuilderAPI_MakeSolid(shell).Solid())
             else:
                 solid=BRepBuilderAPI_MakeSolid(sewed).Solid()
                 lsolid.append(solid)
-    return lsolid
+    lsolid2=[]            
+    for s in lsolid:
+        fixer=ShapeFix_Shape.ShapeFix_Shape(s)
+        fixer.Perform()
+        lsolid2.append(fixer.Shape())
+        """
+        print(' fixer status 2 ',fixer.Status(ShapeExtend.ShapeExtend_DONE1))
+        print(' fixer status 3 ',fixer.Status(ShapeExtend.ShapeExtend_DONE2))
+        print(' fixer status 1 ',fixer.Status(ShapeExtend.ShapeExtend_DONE3))
+        print(' fixer status 4 ',fixer.Status(ShapeExtend.ShapeExtend_DONE4))
+        print(' fixer status 5 ',fixer.Status(ShapeExtend.ShapeExtend_DONE5))
+
+        if( fixer.Status(ShapeExtend.ShapeExtend_DONE)):
+            shape2=fixer.Shape()
+            #print('fixed shape',shape2)
+            wirefix=ShapeFix_Shape.ShapeFix_Wireframe(shape2)
+            wirefix.SetPrecision(1e-6)
+            wirefix.SetMaxTolerance(precision_Confusion())
+            wirefix.SetMinTolerance(precision_Confusion())
+            wirefix.SetModeDropSmallEdges(True)
+            wirefix.FixSmallEdges()
+            wirefix.FixWireGaps()
+            print(' done small edges status',wirefix.StatusSmallEdges(ShapeExtend.ShapeExtend_DONE))
+            print(' done gaps status',wirefix.StatusWireGaps(ShapeExtend.ShapeExtend_DONE))
+        """    
+    return lsolid2
 
 def get_external_shell2(lshape):
        
@@ -203,11 +246,51 @@ def shadow_caster(sun_dir,building,theface,theface_norm,min_area = 1e-3):
     lfaces=[]
     
     for ff in intersection_faces:
+        adapt=BRepAdaptor_Surface(ff)
+        #if adapt.GetType()==0 :
+        #    print('--')
+        if adapt.GetType()==1:
+            print('cylinder type')
+            cyl=adapt.Cylinder()
+            umin,umax,vmin,vmax=breptools_UVBounds(ff)
+            #print(umin,' ', umax,' ',vmin,' ',vmax)
+            if vmin<0.0:
+                cyl.VReverse()
+            
+            ax3=cyl.Position()
+            vec=gp_Dir(*sun_dir.Coord())
+            
+            vec.Cross(ax3.Direction())
+            #vec.Reverse()
+            #vec.Cross(ax3.Direction())
+            #print(' cyl dir ',ax3.Direction().Coord())
+            #print(' vec ',vec.Coord())
+            newax3=gp_Ax3(ax3.Location(),ax3.Direction(),vec)
+            #cyl_surf=Geom_CylindricalSurface(newax3,cyl.Radius()*2).Cylinder()
+            shape=BRepPrimAPI_MakeCylinder(newax3.Ax2(),cyl.Radius()*2,2,3.14).Shape()
+            
+            com=BRepAlgoAPI_Common(shape,ff)
+            com.Build()
+            shape=com.Shape()
+            lcyl.append(shape)
+            maps=TopTools_IndexedMapOfShape()
+            topexp_MapShapes(shape,TopAbs_FACE,maps)
+            lfacetokeep=[maps.FindKey(i) for i in range(1,maps.Size()+1)]
+            if( len(lfacetokeep)==1):
+                ff=lfacetokeep[0]
+            else:
+                continue
+            
+            
+        
+        
+        
         srf3 = BRep_Tool().Surface(ff)
         umin,umax,vmin,vmax=breptools_UVBounds(ff)
         props=GeomLProp_SLProps(srf3,0.5*(umax-umin),0.5*(vmax-vmin),1,0.001)
         fn=props.Normal()
-                
+        
+        
         if(ff.Orientation()==1):
             fn.Reverse()
         # avoid face nearly parallel with extrusion generatrix
@@ -215,6 +298,9 @@ def shadow_caster(sun_dir,building,theface,theface_norm,min_area = 1e-3):
         if(fn.Dot(sun_dir)<-1e-5):
             brepgprop_SurfaceProperties(ff,gpp)
             larea.append(gpp.Mass())
+            if(ff.Orientation()==1):
+                ff.Reverse()
+            
             lfaces.append(ff)
     
     # relative or absolute minimal area
@@ -229,39 +315,871 @@ def shadow_caster(sun_dir,building,theface,theface_norm,min_area = 1e-3):
     # transform a collection of faces into one shell
     sewer=BRepBuilderAPI_Sewing()
     [sewer.Add(f) for f in large_faces]
+    print([f.Orientation() for f in large_faces])
     sewer.Perform()
     sewed=sewer.SewedShape()
     
-    # extrude back to theface
-    extrusion2=BRepPrimAPI_MakePrism(sewed,ext_vec,False,True).Shape()
+    
+   
+    lsolid=[ BRepPrimAPI_MakePrism(s,ext_vec,False,True).Shape() for s in large_faces]
+    los2 = TopTools_ListOfShape()
+    [los2.Append(s) for s in lsolid]
+    #[lext3.append(s) for s in lsolid]
         
     # fusing multiple solid to acheive better results in the final BOP intersection 
+    """
+    extrusion2=BRepPrimAPI_MakePrism(sewed,ext_vec,False,True).Shape()
     maps=TopTools_IndexedMapOfShape()
     topexp_MapShapes(extrusion2, TopAbs_SOLID, maps)
     los = TopTools_ListOfShape()
     [los.Append(maps.FindKey(i)) for i in range(1,maps.Size()+1)]
+    """
     
-    maker=BOPAlgo_MakerVolume()
-    maker.SetArguments(los)
-    maker.Perform()
-    extrusion2=maker.Shape()
+    cb=BOPAlgo_CellsBuilder()
+    cb.SetArguments(los2)
+    cb.Perform()
+    
+    allparts=cb.GetAllParts()
+    cb.SetFuzzyValue(1e-6)
+    cb.AddAllToResult(2,True)
+    extrusion2=cb.Shape()
+    
+    print(cb.DumpErrorsToString())
+    print(cb.DumpWarningsToString()) 
+        
+    
     
     # intersection of second extrusion with theface          
     intersector.Clear()
     intersector.SetOperation(BOPAlgo_Operation.BOPAlgo_COMMON)
     intersector.AddArgument(theface) ## qui coupe qui ? histoire de dimension ?
     intersector.AddTool(extrusion2)
-    intersector.SetFuzzyValue(1e-8)
+    intersector.SetFuzzyValue(1e-6)
     intersector.Perform()
+    print(intersector.DumpErrorsToString())
+    print(intersector.DumpWarningsToString())
     
     intersectionfaces=intersector.Shape()
-    
+    #lext2.append(intersectionfaces)
     
     unify=ShapeUpgrade_UnifySameDomain(intersectionfaces)
     unify.Build()
     shadowface=unify.Shape()
     
     return shadowface
+
+
+def shadow_caster_exp(sun_dir,building,theface,theface_norm,min_area = 1e-3):
+    """
+    sun_dir = one vector (downward direction)
+    building = a solids that possibily make shadow on face
+    face = a face to cast shadow on from building along sun_dir
+    face_norm = pointing to the exterior of the face (outside)
+    
+    return  : a face with zero or positive area, None if no shadow
+    
+    """
+    #print(theface_norm.Dot(sun_dir))
+    # face not exposed to the sun
+    if theface_norm.Dot(sun_dir)>-1e-5:
+        #print('not exposed',flush=True)
+        return theface# void face with zero area
+    gpp=GProp_GProps()
+    brepgprop_SurfaceProperties(theface,gpp)
+    gf_area=gpp.Mass()
+    
+    ext_vec=gp_Vec(sun_dir)
+    ext_vec.Multiply(5)
+    
+    # extrusion of 
+    extrusion1=BRepPrimAPI_MakePrism(theface,-ext_vec,False,True).Shape()
+    
+    intersector=BOPAlgo_BOP()
+    intersector.SetOperation(BOPAlgo_Operation.BOPAlgo_COMMON)
+    intersector.AddTool(extrusion1) 
+    intersector.AddArgument(building)
+    intersector.Perform()
+    intersection=intersector.Shape()
+        
+    intersection_faces=list(TopologyExplorer(intersection).faces())
+               
+    projector=BRepOffsetAPI_NormalProjection(theface)
+    larea=[]
+    lfaces=[]
+    
+    for ff in intersection_faces:
+        
+        adapt=BRepAdaptor_Surface(ff)
+        #if adapt.GetType()==0 :
+        #    print('--')
+        if adapt.GetType()==1:
+            #print('cylinder type')
+            cyl=adapt.Cylinder()
+            umin,umax,vmin,vmax=breptools_UVBounds(ff)
+            #print(umin,' ', umax,' ',vmin,' ',vmax)
+            if vmin<0.0:
+                cyl.VReverse()
+            
+            ax3=cyl.Position()
+            vec=gp_Dir(*sun_dir.Coord())
+            
+            vec.Cross(ax3.Direction())
+            #vec.Reverse()
+            #vec.Cross(ax3.Direction())
+            #print(' cyl dir ',ax3.Direction().Coord())
+            #print(' vec ',vec.Coord())
+            newax3=gp_Ax3(ax3.Location(),ax3.Direction(),vec)
+            #cyl_surf=Geom_CylindricalSurface(newax3,cyl.Radius()*2).Cylinder()
+            shape=BRepPrimAPI_MakeCylinder(newax3.Ax2(),cyl.Radius()*2,2,3.14).Shape()
+            
+            com=BRepAlgoAPI_Common(shape,ff)
+            com.Build()
+            shape=com.Shape()
+            lcyl.append(shape)
+            maps=TopTools_IndexedMapOfShape()
+            topexp_MapShapes(shape,TopAbs_FACE,maps)
+            lfacetokeep=[maps.FindKey(i) for i in range(1,maps.Size()+1)]
+            if( len(lfacetokeep)==1):
+                ff=lfacetokeep[0]
+            else:
+                continue
+            
+            
+        
+        srf3 = BRep_Tool().Surface(ff)
+        umin,umax,vmin,vmax=breptools_UVBounds(ff)
+        props=GeomLProp_SLProps(srf3,0.5*(umax-umin),0.5*(vmax-vmin),1,0.001)
+        fn=props.Normal()
+        
+        
+        
+        if(ff.Orientation()==1):
+            fn.Reverse()
+        # avoid face nearly parallel with extrusion generatrix
+        # ie face with normal perpendicular with extrusion direction
+        if(fn.Dot(sun_dir)<-1e-5):
+            brepgprop_SurfaceProperties(ff,gpp)
+            larea.append(gpp.Mass())
+            if(ff.Orientation()==1):
+                ff.Reverse()
+            
+            lfaces.append(ff)
+    #lf.extend(lfaces)
+    # relative or absolute minimal area
+    # for large window, better to have absolute
+    # face below 1cm2 ?
+    
+    #project faces on theface plane, check area with respecto to precision::confusion ?
+    
+    large_faces=[ff  for ff,a in zip(lfaces,larea) if a/gf_area>min_area]
+    #print(large_faces)
+    # No faces casting shadows, return a void face
+    if(len(large_faces)==0):
+        return TopoDS_Face() # void face with zero area
+    
+    # transform a collection of faces into one shell
+    #sewer=BRepBuilderAPI_Sewing()
+    #[sewer.Add(f) for f in large_faces]
+    
+    
+    # shape fix for small wire / area
+    
+       
+    lsolid=[ BRepPrimAPI_MakePrism(s,ext_vec,False,True).Shape() for s in large_faces]
+    
+    
+    #print(lsolid)
+    if len(lsolid)==1:
+        extrusion2=lsolid[0]
+    else:    
+        los2 = TopTools_ListOfShape()
+        [los2.Append(s) for s in lsolid]
+        #los2.Append(intersection)
+        #los2.Append(theface)
+        #[lext2.append(s) for s in lsolid]
+            
+        # fusing multiple solid to acheive better results in the final BOP intersection 
+        """
+        extrusion2=BRepPrimAPI_MakePrism(sewed,ext_vec,False,True).Shape()
+        maps=TopTools_IndexedMapOfShape()
+        topexp_MapShapes(extrusion2, TopAbs_SOLID, maps)
+        los = TopTools_ListOfShape()
+        [los.Append(maps.FindKey(i)) for i in range(1,maps.Size()+1)]
+        """
+        
+        cb=BOPAlgo_CellsBuilder()
+        cb.SetArguments(los2)
+        #cb.SetFuzzyValue(1e-6)
+        cb.Perform()
+        print(' cb error 1 ',cb.DumpErrorsToString())
+        print(' cb warn  1 ',cb.DumpWarningsToString())
+        
+        
+        if cb.HasWarnings():
+            cb.Clear()
+            los_fix=TopTools_ListOfShape()
+            
+            for s in lsolid:
+                fixer=ShapeFix_Shape.ShapeFix_Wireframe(s)
+                fixer.SetPrecision(1e-4)
+                #print(fixer.Precision())
+                #fixer.SetPrecision(1.e-6)
+                #fixer.SetMinTolerance(1.e-6)
+                #ixer.DropSmallEdgesMode(True)
+                fixer.FixSmallEdges()
+                
+                #fixer.Perform()
+                
+                los_fix.Append(fixer.Shape())
+                #print(shape)
+            cb.SetArguments(los_fix)
+            cb.Perform()
+            print(' solid fixed form small edges')
+            print(' cb error 2',cb.DumpErrorsToString())
+            print(' cb warn  2',cb.DumpWarningsToString())
+               
+            
+        # lostotake = TopTools_ListOfShape()
+        # lostoavoid = TopTools_ListOfShape()
+        # lostotake.Append(intersection)
+        # cb.AddToResult(lostotake,lostoavoid,2,True)
+        #allparts=cb.GetAllParts()
+        """
+        besoin d etre extruder mais pas mal
+        for i in range(len(lsolid)):
+            lostotake = TopTools_ListOfShape()
+            lostotake.Append(lsolid[i])
+            lostotake.Append(intersection)
+            lostoavoid = TopTools_ListOfShape()
+            [lostoavoid.Append(lsolid[j]) for j in range(len(lsolid)) if j !=i]
+            #lostoavoid.Append(intersection)
+            cb.AddToResult(lostotake,lostoavoid,2,True)
+        """
+        """
+        for i in range(len(lsolid)):
+            lostotake = TopTools_ListOfShape()
+            lostotake.Append(lsolid[i])
+            #lostotake.Append(intersection)
+            lostoavoid = TopTools_ListOfShape()
+            #[lostoavoid.Append(lsolid[j]) for j in range(len(lsolid)) if j !=i]
+            #lostoavoid.Append(intersection)
+            cb.AddToResult(lostotake,lostoavoid,2,False)
+        """
+        cb.AddAllToResult(2,False)
+        #print(cb.
+        #print(cb.Shape())
+        cb.RemoveInternalBoundaries()
+        #print(cb.Shape())
+        print(cb.DumpErrorsToString())
+        print(cb.DumpWarningsToString()) 
+        #temp=cb.Shape()
+        """
+        lostotake = TopTools_ListOfShape()
+        lostotake.Append(intersection)
+        lostoavoid = TopTools_ListOfShape()
+        #lostoavoid.Append(temp)
+        cb.AddToResult(lostotake,lostoavoid)#,2,True)
+        """
+            
+        #cb.SetFuzzyValue(1e-6)
+        #cb.AddAllToResult(2,True)
+        extrusion2=cb.Shape()
+    
+    if extrusion2==None:
+        return TopoDS_Face()
+        
+    #lext2.append(extrusion2)
+    print(lext2)
+    
+    
+    # intersection of second extrusion with theface          
+    intersector.Clear()
+    intersector.SetOperation(BOPAlgo_Operation.BOPAlgo_COMMON)
+    intersector.AddArgument(theface) ## qui coupe qui ? histoire de dimension ?
+    intersector.AddTool(extrusion2)
+    intersector.SetFuzzyValue(1e-6)
+    intersector.Perform()
+    print(intersector.DumpErrorsToString())
+    print(intersector.DumpWarningsToString())
+    
+    intersectionfaces=intersector.Shape()
+    #lext2.append(intersectionfaces)
+    
+    unify=ShapeUpgrade_UnifySameDomain(intersectionfaces)
+    unify.Build()
+    shadowface=unify.Shape()
+    
+    return shadowface
+
+
+
+
+def shadow_caster_exp2(sun_dir,building,theface,theface_norm,min_area = 1e-3):
+    """
+    sun_dir = one vector (downward direction)
+    building = a solids that possibily make shadow on face
+    face = a face to cast shadow on from building along sun_dir
+    face_norm = pointing to the exterior of the face (outside)
+    
+    return  : a face with zero or positive area, None if no shadow
+    
+    """
+    #print(theface_norm.Dot(sun_dir))
+    # face not exposed to the sun
+    if theface_norm.Dot(sun_dir)>-1e-5:
+        #print('not exposed',flush=True)
+        return theface# void face with zero area
+    gpp=GProp_GProps()
+    brepgprop_SurfaceProperties(theface,gpp)
+    gf_area=gpp.Mass()
+    
+    ext_vec=gp_Vec(sun_dir)
+    ext_vec.Multiply(5)
+    
+    # extrusion of 
+    extrusion1=BRepPrimAPI_MakePrism(theface,-ext_vec,False,True).Shape()
+    
+    intersector=BOPAlgo_BOP()
+    intersector.SetOperation(BOPAlgo_Operation.BOPAlgo_COMMON)
+    intersector.AddTool(extrusion1) 
+    intersector.AddArgument(building)
+    intersector.Perform()
+    intersection=intersector.Shape()
+        
+    intersection_faces=list(TopologyExplorer(intersection).faces())
+               
+    larea=[]
+    lfaces=[]
+    
+    for ff in intersection_faces:
+        
+        adapt=BRepAdaptor_Surface(ff)
+        #if adapt.GetType()==0 :
+        #    print('--')
+        if adapt.GetType()==1:
+            #print('cylinder type')
+            cyl=adapt.Cylinder()
+            umin,umax,vmin,vmax=breptools_UVBounds(ff)
+            #print(umin,' ', umax,' ',vmin,' ',vmax)
+            if vmin<0.0:
+                cyl.VReverse()
+            
+            ax3=cyl.Position()
+            vec=gp_Dir(*sun_dir.Coord())
+            
+            vec.Cross(ax3.Direction())
+            #vec.Reverse()
+            #vec.Cross(ax3.Direction())
+            #print(' cyl dir ',ax3.Direction().Coord())
+            #print(' vec ',vec.Coord())
+            newax3=gp_Ax3(ax3.Location(),ax3.Direction(),vec)
+            #cyl_surf=Geom_CylindricalSurface(newax3,cyl.Radius()*2).Cylinder()
+            shape=BRepPrimAPI_MakeCylinder(newax3.Ax2(),cyl.Radius()*2,2,3.14).Shape()
+            
+            com=BRepAlgoAPI_Common(shape,ff)
+            com.Build()
+            shape=com.Shape()
+            lcyl.append(shape)
+            maps=TopTools_IndexedMapOfShape()
+            topexp_MapShapes(shape,TopAbs_FACE,maps)
+            lfacetokeep=[maps.FindKey(i) for i in range(1,maps.Size()+1)]
+            if( len(lfacetokeep)==1):
+                ff=lfacetokeep[0]
+            else:
+                continue
+            
+            
+        
+        srf3 = BRep_Tool().Surface(ff)
+        umin,umax,vmin,vmax=breptools_UVBounds(ff)
+        props=GeomLProp_SLProps(srf3,0.5*(umax-umin),0.5*(vmax-vmin),1,0.001)
+        fn=props.Normal()
+        
+        
+        
+        if(ff.Orientation()==1):
+            fn.Reverse()
+        # avoid face nearly parallel with extrusion generatrix
+        # ie face with normal perpendicular with extrusion direction
+        if(fn.Dot(sun_dir)<-1e-5):
+            brepgprop_SurfaceProperties(ff,gpp)
+            larea.append(gpp.Mass())
+            if(ff.Orientation()==1):
+                ff.Reverse()
+            
+            lfaces.append(ff)
+    
+    sewer=BRepBuilderAPI_Sewing()
+    [sewer.Add(f) for f in lfaces]
+    #print([f.Orientation() for f in large_faces])
+    sewer.Perform()
+    sewed=sewer.SewedShape()
+    print(sewed)
+    
+    
+    lsolid=[ BRepPrimAPI_MakePrism(f,ext_vec,False,True).Shape() for f in TopologyExplorer(sewed).faces()]
+
+    #lsolid=[ BRepPrimAPI_MakePrism(s,ext_vec,False,True).Shape() for s in lfaces]
+    
+    #large_faces=[ff  for ff,a in zip(lfaces,larea) if a/gf_area>min_area]
+    
+    if(len(lsolid)==0):
+        return TopoDS_Face() # void face with zero area
+    
+    brepgprop_SurfaceProperties(theface,gpp)
+    totarea=gpp.Mass()
+    lsolid2=[]
+    
+    for s,f in zip(lsolid,lfaces):
+        common=BRepAlgoAPI_Common(s,theface)
+        common.Build()
+        sh=common.Shape()
+        brepgprop_SurfaceProperties(sh,gpp)
+        area_proj=gpp.Mass()
+        brepgprop_SurfaceProperties(f,gpp)
+        area=gpp.Mass()
+        if(area_proj/totarea<1e-4):
+            continue
+        """
+        #print(' new face ')
+        ll=[]
+        for e in TopologyExplorer(s).edges():
+            brepgprop_LinearProperties(e,gpp)
+            length = gpp.Mass()
+            ll.append(length)
+        print('moin ',min(ll))
+        #print(area,' ', area_proj,' ', area_proj/area,' ',area_proj/totarea)
+        checker=BRepCheck_Analyzer(s)
+        fixer=ShapeFix_Shape.ShapeFix_Shape(s)
+        fixer.Perform()
+        if( fixer.Status(ShapeExtend.ShapeExtend_DONE)):
+            shape2=fixer.Shape()
+            #print('fixed shape',shape2)
+            wirefix=ShapeFix_Shape.ShapeFix_Wireframe(shape2)
+            wirefix.SetPrecision(1e-7)
+            wirefix.SetMaxTolerance(precision_Confusion())
+            wirefix.SetMinTolerance(precision_Confusion())
+            wirefix.SetModeDropSmallEdges(True)
+            wirefix.FixSmallEdges()
+            wirefix.FixWireGaps()
+            #print(' done small edges status',wirefix.StatusSmallEdges(ShapeExtend.ShapeExtend_DONE1))
+            #print(' done gaps status',wirefix.StatusWireGaps(ShapeExtend.ShapeExtend_DONE))
+        """
+        lsolid2.append(s)
+            
+        #print(checker.IsValid())
+        
+            #print('----> kept \n')
+    print(len(lsolid),'-->',len(lsolid2))
+    
+    lsolid=lsolid2
+    
+    #print(lsolid)
+    if len(lsolid)==1:
+        extrusion2=lsolid[0]
+    else:    
+        los2 = TopTools_ListOfShape()
+        [los2.Append(s) for s in lsolid]
+        #los2.Append(intersection)
+        #los2.Append(theface)
+        #[lext2.append(s) for s in lsolid]
+            
+        # fusing multiple solid to acheive better results in the final BOP intersection 
+        """
+        extrusion2=BRepPrimAPI_MakePrism(sewed,ext_vec,False,True).Shape()
+        maps=TopTools_IndexedMapOfShape()
+        topexp_MapShapes(extrusion2, TopAbs_SOLID, maps)
+        los = TopTools_ListOfShape()
+        [los.Append(maps.FindKey(i)) for i in range(1,maps.Size()+1)]
+        """
+        
+        cb=BOPAlgo_CellsBuilder()
+        cb.SetArguments(los2)
+        #cb.SetGlue(True)
+        #cb.SetFuzzyValue(1e-5)
+        cb.Perform()
+        print(' cb error 1 ',cb.DumpErrorsToString())
+        print(' cb warn  1 ',cb.DumpWarningsToString())
+        
+        """
+        if cb.HasWarnings():
+            cb.Clear()
+            los_fix=TopTools_ListOfShape()
+            
+            for s in lsolid:
+                fixer=ShapeFix_Shape.ShapeFix_Wireframe(s)
+                fixer.SetPrecision(1e-4)
+                #print(fixer.Precision())
+                #fixer.SetPrecision(1.e-6)
+                #fixer.SetMinTolerance(1.e-6)
+                #ixer.DropSmallEdgesMode(True)
+                fixer.FixSmallEdges()
+                
+                #fixer.Perform()
+                
+                los_fix.Append(fixer.Shape())
+                #print(shape)
+            cb.SetArguments(los_fix)
+            cb.Perform()
+            print(' solid fixed form small edges')
+            print(' cb error 2',cb.DumpErrorsToString())
+            print(' cb warn  2',cb.DumpWarningsToString())
+        """       
+            
+        # lostotake = TopTools_ListOfShape()
+        # lostoavoid = TopTools_ListOfShape()
+        # lostotake.Append(intersection)
+        # cb.AddToResult(lostotake,lostoavoid,2,True)
+        #allparts=cb.GetAllParts()
+        """
+        besoin d etre extruder mais pas mal
+        for i in range(len(lsolid)):
+            lostotake = TopTools_ListOfShape()
+            lostotake.Append(lsolid[i])
+            lostotake.Append(intersection)
+            lostoavoid = TopTools_ListOfShape()
+            [lostoavoid.Append(lsolid[j]) for j in range(len(lsolid)) if j !=i]
+            #lostoavoid.Append(intersection)
+            cb.AddToResult(lostotake,lostoavoid,2,True)
+        """
+        """
+        for i in range(len(lsolid)):
+            lostotake = TopTools_ListOfShape()
+            lostotake.Append(lsolid[i])
+            #lostotake.Append(intersection)
+            lostoavoid = TopTools_ListOfShape()
+            #[lostoavoid.Append(lsolid[j]) for j in range(len(lsolid)) if j !=i]
+            #lostoavoid.Append(intersection)
+            cb.AddToResult(lostotake,lostoavoid,2,False)
+        """
+        cb.AddAllToResult(2,False)
+        #print(cb.
+        #print(cb.Shape())
+        cb.RemoveInternalBoundaries()
+        #print(cb.Shape())
+        #print(cb.DumpErrorsToString())
+        #print(cb.DumpWarningsToString()) 
+        #temp=cb.Shape()
+        """
+        lostotake = TopTools_ListOfShape()
+        lostotake.Append(intersection)
+        lostoavoid = TopTools_ListOfShape()
+        #lostoavoid.Append(temp)
+        cb.AddToResult(lostotake,lostoavoid)#,2,True)
+        """
+            
+        #cb.SetFuzzyValue(1e-6)
+        #cb.AddAllToResult(2,True)
+        extrusion2=cb.Shape()
+    
+    if extrusion2==None:
+        return TopoDS_Face()
+        
+    #lext2.append(extrusion2)
+    #print(lext2)
+    
+    
+    # intersection of second extrusion with theface          
+    intersector.Clear()
+    intersector.SetOperation(BOPAlgo_Operation.BOPAlgo_COMMON)
+    intersector.AddArgument(theface) ## qui coupe qui ? histoire de dimension ?
+    intersector.AddTool(extrusion2)
+    intersector.SetFuzzyValue(1e-6)
+    intersector.Perform()
+    print(intersector.DumpErrorsToString())
+    print(intersector.DumpWarningsToString())
+    
+    intersectionfaces=intersector.Shape()
+    #lext2.append(intersectionfaces)
+    
+    unify=ShapeUpgrade_UnifySameDomain(intersectionfaces)
+    unify.Build()
+    shadowface=unify.Shape()
+    
+    return shadowface
+
+
+
+def shadow_caster_exp3(sun_dir,building,theface,theface_norm,min_area = 1e-3):
+    """
+    sun_dir = one vector (downward direction)
+    building = a solids that possibily make shadow on face
+    face = a face to cast shadow on from building along sun_dir
+    face_norm = pointing to the exterior of the face (outside)
+    
+    return  : a face with zero or positive area, None if no shadow
+    
+    """
+    #print(theface_norm.Dot(sun_dir))
+    # face not exposed to the sun
+    if theface_norm.Dot(sun_dir)>-1e-5:
+        #print('not exposed',flush=True)
+        return theface# void face with zero area
+    gpp=GProp_GProps()
+    brepgprop_SurfaceProperties(theface,gpp)
+    gf_area=gpp.Mass()
+    
+    ext_vec=gp_Vec(sun_dir)
+    ext_vec.Multiply(5)
+    
+    # extrusion of 
+    extrusion1=BRepPrimAPI_MakePrism(theface,-ext_vec,False,True).Shape()
+    
+    intersector=BOPAlgo_BOP()
+    intersector.SetOperation(BOPAlgo_Operation.BOPAlgo_COMMON)
+    intersector.AddTool(extrusion1) 
+    intersector.AddArgument(building)
+    intersector.Perform()
+    intersection=intersector.Shape()
+        
+    intersection_faces=list(TopologyExplorer(intersection).faces())
+               
+    larea=[]
+    lfaces=[]
+    
+    for ff in intersection_faces:
+        
+        adapt=BRepAdaptor_Surface(ff)
+        #if adapt.GetType()==0 :
+        #    print('--')
+        if adapt.GetType()==1:
+            #print('cylinder type')
+            cyl=adapt.Cylinder()
+            umin,umax,vmin,vmax=breptools_UVBounds(ff)
+            #print(umin,' ', umax,' ',vmin,' ',vmax)
+            if vmin<0.0:
+                cyl.VReverse()
+            
+            ax3=cyl.Position()
+            vec=gp_Dir(*sun_dir.Coord())
+            
+            vec.Cross(ax3.Direction())
+            #vec.Reverse()
+            #vec.Cross(ax3.Direction())
+            #print(' cyl dir ',ax3.Direction().Coord())
+            #print(' vec ',vec.Coord())
+            newax3=gp_Ax3(ax3.Location(),ax3.Direction(),vec)
+            #cyl_surf=Geom_CylindricalSurface(newax3,cyl.Radius()*2).Cylinder()
+            shape=BRepPrimAPI_MakeCylinder(newax3.Ax2(),cyl.Radius()*2,2,3.14).Shape()
+            
+            com=BRepAlgoAPI_Common(shape,ff)
+            com.Build()
+            shape=com.Shape()
+            lcyl.append(shape)
+            maps=TopTools_IndexedMapOfShape()
+            topexp_MapShapes(shape,TopAbs_FACE,maps)
+            lfacetokeep=[maps.FindKey(i) for i in range(1,maps.Size()+1)]
+            if( len(lfacetokeep)==1):
+                ff=lfacetokeep[0]
+            else:
+                continue
+            
+            
+        
+        srf3 = BRep_Tool().Surface(ff)
+        umin,umax,vmin,vmax=breptools_UVBounds(ff)
+        props=GeomLProp_SLProps(srf3,0.5*(umax-umin),0.5*(vmax-vmin),1,0.001)
+        fn=props.Normal()
+        
+        
+        
+        if(ff.Orientation()==1):
+            fn.Reverse()
+        # avoid face nearly parallel with extrusion generatrix
+        # ie face with normal perpendicular with extrusion direction
+        if(fn.Dot(sun_dir)<-1e-5):
+            brepgprop_SurfaceProperties(ff,gpp)
+            larea.append(gpp.Mass())
+            if(ff.Orientation()==1):
+                ff.Reverse()
+            
+            lfaces.append(ff)
+    
+    
+
+    lsolid=[ BRepPrimAPI_MakePrism(s,ext_vec,False,True).Shape() for s in lfaces]
+    
+    #large_faces=[ff  for ff,a in zip(lfaces,larea) if a/gf_area>min_area]
+    
+    if(len(lsolid)==0):
+        return TopoDS_Face() # void face with zero area
+    
+    brepgprop_SurfaceProperties(theface,gpp)
+    totarea=gpp.Mass()
+    lsolid2=[]
+    lface2=[]
+    for s,f in zip(lsolid,lfaces):
+        common=BRepAlgoAPI_Common(s,theface)
+        common.Build()
+        sh=common.Shape()
+        brepgprop_SurfaceProperties(sh,gpp)
+        area_proj=gpp.Mass()
+        brepgprop_SurfaceProperties(f,gpp)
+        area=gpp.Mass()
+        if(area_proj/totarea<1e-4):
+            continue
+        """
+        #print(' new face ')
+        ll=[]
+        for e in TopologyExplorer(s).edges():
+            brepgprop_LinearProperties(e,gpp)
+            length = gpp.Mass()
+            ll.append(length)
+        print('moin ',min(ll))
+        #print(area,' ', area_proj,' ', area_proj/area,' ',area_proj/totarea)
+        checker=BRepCheck_Analyzer(s)
+        fixer=ShapeFix_Shape.ShapeFix_Shape(s)
+        fixer.Perform()
+        if( fixer.Status(ShapeExtend.ShapeExtend_DONE)):
+            shape2=fixer.Shape()
+            #print('fixed shape',shape2)
+            wirefix=ShapeFix_Shape.ShapeFix_Wireframe(shape2)
+            wirefix.SetPrecision(1e-7)
+            wirefix.SetMaxTolerance(precision_Confusion())
+            wirefix.SetMinTolerance(precision_Confusion())
+            wirefix.SetModeDropSmallEdges(True)
+            wirefix.FixSmallEdges()
+            wirefix.FixWireGaps()
+            #print(' done small edges status',wirefix.StatusSmallEdges(ShapeExtend.ShapeExtend_DONE1))
+            #print(' done gaps status',wirefix.StatusWireGaps(ShapeExtend.ShapeExtend_DONE))
+        """
+        lface2.append(sh)
+        lsolid2.append(s)
+            
+        #print(checker.IsValid())
+        
+            #print('----> kept \n')
+    print(len(lsolid),'-->',len(lsolid2))
+    
+    lsolid=lsolid2
+    
+    #print(lsolid)
+    if len(lface2)==1:
+        extrusion2=lface2[0]
+    else:    
+        los2 = TopTools_ListOfShape()
+        [los2.Append(s) for s in lface2]
+        #los2.Append(intersection)
+        #los2.Append(theface)
+        #[lext2.append(s) for s in lsolid]
+            
+        # fusing multiple solid to acheive better results in the final BOP intersection 
+        """
+        extrusion2=BRepPrimAPI_MakePrism(sewed,ext_vec,False,True).Shape()
+        maps=TopTools_IndexedMapOfShape()
+        topexp_MapShapes(extrusion2, TopAbs_SOLID, maps)
+        los = TopTools_ListOfShape()
+        [los.Append(maps.FindKey(i)) for i in range(1,maps.Size()+1)]
+        """
+        
+        cb=BOPAlgo_CellsBuilder()
+        cb.SetArguments(los2)
+        #cb.SetGlue(True)
+        #cb.SetFuzzyValue(1e-5)
+        cb.Perform()
+        print(' cb error 1 ',cb.DumpErrorsToString())
+        print(' cb warn  1 ',cb.DumpWarningsToString())
+        
+        """
+        if cb.HasWarnings():
+            cb.Clear()
+            los_fix=TopTools_ListOfShape()
+            
+            for s in lsolid:
+                fixer=ShapeFix_Shape.ShapeFix_Wireframe(s)
+                fixer.SetPrecision(1e-4)
+                #print(fixer.Precision())
+                #fixer.SetPrecision(1.e-6)
+                #fixer.SetMinTolerance(1.e-6)
+                #ixer.DropSmallEdgesMode(True)
+                fixer.FixSmallEdges()
+                
+                #fixer.Perform()
+                
+                los_fix.Append(fixer.Shape())
+                #print(shape)
+            cb.SetArguments(los_fix)
+            cb.Perform()
+            print(' solid fixed form small edges')
+            print(' cb error 2',cb.DumpErrorsToString())
+            print(' cb warn  2',cb.DumpWarningsToString())
+        """       
+            
+        # lostotake = TopTools_ListOfShape()
+        # lostoavoid = TopTools_ListOfShape()
+        # lostotake.Append(intersection)
+        # cb.AddToResult(lostotake,lostoavoid,2,True)
+        #allparts=cb.GetAllParts()
+        """
+        besoin d etre extruder mais pas mal
+        for i in range(len(lsolid)):
+            lostotake = TopTools_ListOfShape()
+            lostotake.Append(lsolid[i])
+            lostotake.Append(intersection)
+            lostoavoid = TopTools_ListOfShape()
+            [lostoavoid.Append(lsolid[j]) for j in range(len(lsolid)) if j !=i]
+            #lostoavoid.Append(intersection)
+            cb.AddToResult(lostotake,lostoavoid,2,True)
+        """
+        """
+        for i in range(len(lsolid)):
+            lostotake = TopTools_ListOfShape()
+            lostotake.Append(lsolid[i])
+            #lostotake.Append(intersection)
+            lostoavoid = TopTools_ListOfShape()
+            #[lostoavoid.Append(lsolid[j]) for j in range(len(lsolid)) if j !=i]
+            #lostoavoid.Append(intersection)
+            cb.AddToResult(lostotake,lostoavoid,2,False)
+        """
+        cb.AddAllToResult(2,False)
+        #print(cb.
+        #print(cb.Shape())
+        cb.RemoveInternalBoundaries()
+        #print(cb.Shape())
+        #print(cb.DumpErrorsToString())
+        #print(cb.DumpWarningsToString()) 
+        #temp=cb.Shape()
+        """
+        lostotake = TopTools_ListOfShape()
+        lostotake.Append(intersection)
+        lostoavoid = TopTools_ListOfShape()
+        #lostoavoid.Append(temp)
+        cb.AddToResult(lostotake,lostoavoid)#,2,True)
+        """
+            
+        #cb.SetFuzzyValue(1e-6)
+        #cb.AddAllToResult(2,True)
+        extrusion2=cb.Shape()
+    
+    if extrusion2==None:
+        return TopoDS_Face()
+        
+    #lext2.append(extrusion2)
+    #print(lext2)
+    
+    shadowface=extrusion2
+    """
+    # intersection of second extrusion with theface          
+    intersector.Clear()
+    intersector.SetOperation(BOPAlgo_Operation.BOPAlgo_COMMON)
+    intersector.AddArgument(theface) ## qui coupe qui ? histoire de dimension ?
+    intersector.AddTool(extrusion2)
+    intersector.SetFuzzyValue(1e-6)
+    intersector.Perform()
+    print(intersector.DumpErrorsToString())
+    print(intersector.DumpWarningsToString())
+    
+    intersectionfaces=intersector.Shape()
+    #lext2.append(intersectionfaces)
+    
+    unify=ShapeUpgrade_UnifySameDomain(intersectionfaces)
+    unify.Build()
+    shadowface=unify.Shape()
+    """
+    return shadowface
+
+
+
 
 def shadow_caster_ray(sun_dir,building,theface,theface_norm,Nray=5):
  
@@ -283,8 +1201,8 @@ def shadow_caster_ray(sun_dir,building,theface,theface_norm,Nray=5):
         
         for u,v in zip(uvalues.flatten(),vvalues.flatten()):
             point=srf.Value(u,v)
-            lshape.append(BRepPrimAPI_MakeSphere(point,sphere_rad).Shape())
-        return np.ones(uvalues.shape),lshape# all points of discretization are in shadow
+            #lshape.append(BRepPrimAPI_MakeSphere(point,sphere_rad).Shape())
+        return np.ones(uvalues.shape)#,lshape# all points of discretization are in shadow
     
     
     shape_inter = IntCurvesFace_ShapeIntersector()
@@ -294,16 +1212,16 @@ def shadow_caster_ray(sun_dir,building,theface,theface_norm,Nray=5):
     for u,v in zip(uvalues.flatten(),vvalues.flatten()):
         point=srf.Value(u,v)
         line=gp_Lin(point,-sun_dir)
-        shape_inter.PerformNearest(line, 0.0,infinity)
+        shape_inter.PerformNearest(line, 0.0,100.)
         nbpoints.append(shape_inter.NbPnt())
-        if(shape_inter.NbPnt()>0):
-            lshape.append(BRepPrimAPI_MakeSphere(point,sphere_rad).Shape())
+        #if(shape_inter.NbPnt()>0):
+        #    lshape.append(BRepPrimAPI_MakeSphere(point,sphere_rad).Shape())
     
     #print(nbpoints)
     res=np.array(nbpoints).reshape(uvalues.shape)
     
     res[res>0.]=1
-    return res,lshape
+    return res #,lshape
     #intersect line with the building
     # 
     # 
@@ -456,6 +1374,7 @@ class shadow_on_faces:
         self._lfaces=lfaces
         self._lsun_dir=lsun_dir
         self._shadow_faces=[[] for i in range(len(self._lfaces))]
+        self._durations_byfaces=[[]]
         
 
     def compute_shadow(self,exposed_building,min_area):
@@ -469,8 +1388,12 @@ class shadow_on_faces:
                 face_norm.Reverse()
                 
             for j,sun_dir in enumerate(self._lsun_dir):
-                shadow_face=shadow_caster(sun_dir,exposed_building,gf,face_norm,1.e-3)
+                start=timer()
+                shadow_face=shadow_caster_exp3(sun_dir,exposed_building,gf,face_norm,1.e-3)
+                print('     sun dir ',j,'/',len(self._lsun_dir))
+                end=timer()
                 self._shadow_faces[i].append(shadow_face)
+                self._durations_byfaces[i].append(end-start)
                 
         #print(' faces ',self._shadow_faces)
     
@@ -482,6 +1405,7 @@ class shadow_on_faces:
             self._glass_area+=gpp.Mass()
         
         self._shadow_area_vector=[]
+        self._totalduration=[]
         for vector_idx in range(len(self._lsun_dir)):
             area_sum=0.0           
             for face_idx in range(len(self._lfaces)):
@@ -489,6 +1413,7 @@ class shadow_on_faces:
                 area_sum+=gpp.Mass()
                 
             self._shadow_area_vector.append(area_sum)
+            #self._totalduration.append( self._durations[face_idx])
             
         self._ratio_vector=[ a/self._glass_area for a in self._shadow_area_vector]
         #print(' shadow area vector ',self._shadow_area_vector)
@@ -563,7 +1488,7 @@ class shadow_on_faces_byray:
         self._lfaces=lfaces
         self._lsun_dir=lsun_dir
         self._shadow_tab=[[] for i in range(len(self._lfaces))]
-        
+        self._durations_byfaces=[[]]
         
 
     def compute_shadow(self,exposed_building,min_area,N):
@@ -579,21 +1504,31 @@ class shadow_on_faces_byray:
                 face_norm.Reverse()
                 
             for j,sun_dir in enumerate(self._lsun_dir):
-                tab,lshape=shadow_caster_ray(sun_dir,exposed_building,gf,face_norm,N)
-                
+                start=timer()
+                #tab,lshape=shadow_caster_ray(sun_dir,exposed_building,gf,face_norm,N)
+                tab=shadow_caster_ray(sun_dir,exposed_building,gf,face_norm,N)
+                end=timer()
                 self._shadow_tab[i].append(tab)
+                #print(start,' ',end)
+                self._durations_byfaces[i].append(end-start)
+                
                 
         #print(' faces ',self._shadow_faces)
     
     def compute_area_and_ratio(self):
         
         self._shadow_area_vector=[]
+        self._totalduration=[]
         for vector_idx in range(len(self._lsun_dir)):
             area_sum=0.0           
             for face_idx in range(len(self._lfaces)):
                 area_sum+=self._shadow_tab[face_idx][vector_idx].sum()
                 
             self._shadow_area_vector.append(area_sum)
+            #print(self._durations)
+        
+        
+        #self._totalduration.append( self._durations[face_idx])
             
         self._ratio_vector=[ a/(self._N*self._N) for a in self._shadow_area_vector]
         #print(' shadow area vector ',self._shadow_area_vector)
@@ -677,6 +1612,7 @@ ifcextension= []+slab+proxys
 extensionshape = [create_shape(setting, x).geometry for x in ifcextension if x.Representation is not None]
 extensionsolid=  shapes_as_solids(extensionshape)
 
+
 ifcbuilding= ifccorebuilding + ifcextension
 building_shapes= building_shapes_core + extensionshape
 lsolid= lsolid_core + extensionsolid
@@ -691,13 +1627,40 @@ glassface_bywindowid=biggestfaces_along_normal(wallwindow,wallnorm)
 
 exposed_building=fuse_listOfShape(lsolid)
 
-
-
-
+"""
+Article configuration
 npos=60
 h_angles=np.arange(0,360.,360./npos)
 #h_angles=[270.]
 v_angles=[60.,65.,70.,75.,80.,85.]
+x=-np.cos(np.deg2rad(h_angles))
+y=-np.sin(np.deg2rad(h_angles))
+z=-np.sin(np.deg2rad(v_angles))
+
+lparams=[(v,h) for (v,h) in itertools.product(v_angles,h_angles)]
+vvalues=[ v[0] for v in lparams]
+hvalues=[ v[1] for v in lparams]
+
+l_sun_dir=[gp_Dir(xi,yi,zi) for (zi,(xi,yi)) in itertools.product(z,zip(x,y))]
+
+N=[4,6,8,10,15,20,30,40,50]               
+"""
+
+
+lf=[]
+lext2=[]
+lext3=[]
+lcyl=[]
+lshells=[]
+
+npos=60
+h_angles=np.arange(0,360.,360./npos)
+v_angles=[60.,65.,70.,75.,80.,85.]
+
+#h_angles=[h_angles[30]]
+#h_angles=[360./50.*18.]
+#v_angles=[80.]
+
 x=-np.cos(np.deg2rad(h_angles))
 y=-np.sin(np.deg2rad(h_angles))
 z=-np.sin(np.deg2rad(v_angles))
@@ -714,7 +1677,7 @@ lsof=[]
 
 for (k,win_id) in enumerate(glassface_bywindowid.keys()):
     lglassfaces=glassface_bywindowid[win_id]
-    
+    print(' window id ', win_id)
     sof=shadow_on_faces(lglassfaces,l_sun_dir)
     sof.compute_shadow(exposed_building,1e-3)
     sof.compute_area_and_ratio()
@@ -723,6 +1686,48 @@ for (k,win_id) in enumerate(glassface_bywindowid.keys()):
     #sof.compute_area_and_ratio_byunion()
     lsof.append(sof)
 
+
+def rgb_color(r, g, b):
+    return Quantity_Color(r, g, b, Quantity_TOC_RGB)
+
+"""
+lshape=[s for sof in lsof for s in sof._shadow_faces]
+lshape=list(itertools.chain(*lshape))
+write_stl_file(shadowshape, 'shadow.stl')
+
+lshape=[s for sof in lsof for s in sof._complementary_faces]
+lshape=list(itertools.chain(*lshape))
+shadowshape=fuse_listOfShape(lshape)
+write_stl_file(shadowshape, 'shadow_compl.stl')
+"""
+
+
+
+x=50/256
+gray=rgb_color(x, x, x)
+
+display, start_display, add_menu, add_function_to_menu = init_display()
+
+[display.DisplayShape(s,color=gray,transparency=0.9) for s in building_shapes]
+for sof in lsof:
+    [display.DisplayShape(s,transparency=0.1,color='BLACK') for s in sof._shadow_faces]
+    [display.DisplayShape(s,transparency=0.1,color='YELLOW') for s in sof._complementary_faces]
+    
+[display.DisplayShape(s,color='RED',transparency=0.0) for s in lext2] 
+#[display.DisplayShape(s,color='GREEN',transparency=0.1) for s in lshells] 
+
+[display.DisplayShape(s,color='BLUE',transparency=0.1) for s in lf] 
+#[display.DisplayShape(s,color='RED',transparency=0.0) for s in lcyl]
+
+#s=lsof[0]._complementary_faces[0]
+
+display.FitAll()
+#ifcopenshell.geom.utils.main_loop()
+start_display()
+cdc
+
+
+"""
 llsofr=[[] for nray in N]    
 for i,nray in enumerate(N):
     
@@ -732,28 +1737,32 @@ for i,nray in enumerate(N):
         sofr.compute_shadow(exposed_building,1e-3,nray)
         sofr.compute_area_and_ratio()
         llsofr[i].append((nray,sofr))
-
+"""
 # Build a dataframe with all the results
 frames=[]
 for sof,id in zip(lsof,glassface_bywindowid.keys()):
     name=window_id_name[id]
+    durations=np.array(sof._durations_byfaces).mean(axis=0)
     frames.append(pd.DataFrame(zip(vvalues,hvalues,
                                 itertools.repeat(name),
                                 itertools.repeat(0),
-                                sof._ratio_vector)))
-
+                                sof._ratio_vector,
+                                durations)))
+"""
 for i,(lsofr,n) in enumerate(zip(llsofr,N)):
     
     for (_,sof),id in zip(lsofr,glassface_bywindowid.keys()):
         name=window_id_name[id]
+        durations=np.array(sof._durations_byfaces).mean(axis=0)
         frames.append(pd.DataFrame(zip(vvalues,hvalues,
                                 itertools.repeat(name),
                                 itertools.repeat(n),
-                                sof._ratio_vector)))
-    
+                                sof._ratio_vector,
+                                durations)))
+"""  
 res=pd.concat(frames) 
-res.columns=['v_angle','h_angle','name','Nray','shad_ratio']
-res.to_csv('Results.csv')
+res.columns=['v_angle','h_angle','name','Nray','shad_ratio','duration']
+res.to_csv('Results_extrusiononly.csv')
 
 
 
