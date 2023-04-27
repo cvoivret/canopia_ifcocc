@@ -17,7 +17,6 @@ window_tagname={
 }
 res=pd.read_csv('Results_article3.csv')
 
-#res=pd.read_csv('Results_extrusiononly.csv')
 
 N=np.unique(res.Nray)
 v_angles=np.unique(res.v_angle)
@@ -38,10 +37,7 @@ colordictAngle=dict(zip(v_angles,colors[:len(v_angles)]))
 linestyle=['-','--','-.',':']
 
 
-#change to groupby
 resext=res[res.Nray==0]
-#grouped=resext.groupby(['v_angle','name'])
-
 
 resext2=resext[ resext.name !='B']
 col_order=["Ref",'C45','C60','A1','A2','A3']
@@ -52,87 +48,11 @@ grid.set_xlabels(r"$\alpha$")
 grid.set_ylabels(r"$C_m$")
 grid.add_legend()
 grid.legend.set_title(r"$\theta$")
-#grid.fig.tight_layout(w_pad=1)
 plt.savefig("figure1.eps")
 plt.close()
 
-#plt.show()
-#sns.relplot(data=res2,x='shad_ratio',y='Rel_error',hue='Nray',style='name')
-#plt.show()
 
-
-"""
-for i,(key,group) in enumerate(grouped):
-    
-    plt.plot(group.h_angle,group.shad_ratio,
-                    marker=markerdict[key[1]],
-                    color=colordictAngle[key[0]],
-                    
-                    #linestyle=linestyle[i]
-                    )
-fake_data1=[]
-fake_data2=[]
-wlabels=[ str(n) for n in window_tagname.keys()]
-alabels=[ str() for n in N]
-
-for name,m in zip(markerdict.keys(),markerdict.values()):
-    fake_data1+=plt.plot([],[],marker=m,label=name,color='k',linestyle='None')
-    
-for angle,color in zip(colordictAngle.keys(),colordictAngle.values()):
-    fake_data2+=plt.plot([],[],marker='s',markersize=10,label=str(angle),color=color,linestyle='None')
-
-plt.xlabel('H_angle')
-plt.ylabel('SR_Extrusion')
-l1=plt.legend(fake_data1,markerdict.keys(),loc='lower right', frameon=False)
-l2=plt.legend(fake_data2,colordictAngle.keys(),loc='lower left', frameon=False)    
-plt.gca().add_artist(l1)
-plt.show()
-"""
-"""
-grouped=res.groupby('Nray')
-ltemp=[]
-for n,group in grouped:
-    if n==0:
-        continue
-    extvalues=grouped.get_group(0)['shad_ratio'].values
-    rayvalues=grouped.get_group(n)['shad_ratio'].values
-    mask = rayvalues/extvalues!=1.0
-    toplot= rayvalues/extvalues
-    temp=pd.DataFrame(grouped.get_group(n))
-    temp['Rel_error']=toplot
-    
-    ltemp.append(temp[mask])
-    #plt.hist(group[mask].shad_ratio)
-    # plt.hist(toplot[mask],
-                          # label=name,
-                          # density=True,
-                          # histtype='step',
-                          # bins=30,
-                          # range=(0.5,2))
-
-# plt.legend()
-# plt.show()
-"""
-"""
-resNray=pd.concat(ltemp)
-kde=sns.kdeplot(data=resNray,y='Rel_error',hue='Nray',palette=colorlistN[1:])
-kde.figure.set_figwidth(4)
-plt.show()
-
-"""
-
-
-
-    
-#ext_ratio = np.array([ sof._ratio_vector for sof in lsof])
-#ray_ratio = np.array([ [sofr._ratio_vector for n,sofr in list ] for list in llsofr])
-"""
-markerlist=['o','v','^','<','s','+','x']
-prop_cycle = plt.rcParams['axes.prop_cycle']
-colors = prop_cycle.by_key()['color']
-colorlist=colors[:len(N)]
-# average error
-"""
+# data creation : Error and duration
 grouped=res.groupby(['Nray','name'])
 
 ltemp=[]
@@ -158,19 +78,6 @@ for i,n in enumerate(Ntoplot):
         
         ltemp.append(temp[mask])
         
-        
-        
-                          
-                        
-"""
-plt.xlabel('SR_extrusion')
-plt.ylabel('SR_ray / SR_Extrusion')
-l1=plt.legend(fake_data1,markerdict.keys(),loc='upper center', frameon=False)
-l2=plt.legend(fake_data2,Ntoplot,loc='upper right', frameon=False)
-plt.gca().add_artist(l1)
-
-plt.show()
-"""
 
 
 res3=pd.concat(ltemp)
@@ -220,22 +127,13 @@ l2=plt.legend(fake_data2,Ntoplot,
                 title='N')
                 
 plt.gca().add_artist(l1)
-#ax2.set_box_aspect(4.)
 fig.tight_layout()
-#fig.legend(ncols=2)
 plt.savefig("figure2.eps")
 plt.clf()
 #plt.show()
 
 
 
-
-#line=sns.lineplot(data=res3,x='Nray',y='duration_norm',hue='name')#,err_style="bars")
-"""
-line=sns.lineplot(data=res3,x='Nray',y='duration_norm',err_style="band",errorbar='sd')
-plt.hlines(1,0,50,'gray',linestyle='dashed')
-plt.show()
-"""
 lab_dur=r"$<t_N>$"
 lab_err=r"$\sigma_E$"
 
@@ -256,9 +154,6 @@ line2=ax2.plot(deviation.index, deviation.values, color=color,label=lab_err,ls='
 l, labels = line.get_legend_handles_labels()
 l2, labels2 = ax2.get_legend_handles_labels()
 ax2.legend(l + l2, labels + labels2, loc=0)
-#plt.legend( )
-#ax2.tick_params(axis='y', labelcolor=color)
-#plt.show()
 plt.savefig("figure3.eps")
 
 
